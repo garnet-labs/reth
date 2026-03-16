@@ -3255,9 +3255,9 @@ impl SparseTrie for ArenaParallelSparseTrie {
         #[cfg(feature = "metrics")]
         let upper_walk_start = Instant::now();
         #[cfg(feature = "metrics")]
-        let inline_subtrie_elapsed = core::time::Duration::ZERO;
+        let mut inline_subtrie_elapsed = core::time::Duration::ZERO;
         #[cfg(feature = "metrics")]
-        let inline_subtrie_count = 0u64;
+        let mut inline_subtrie_count = 0u64;
         #[cfg(feature = "metrics")]
         let mut upper_seek_count = 0u64;
 
@@ -3316,8 +3316,47 @@ impl SparseTrie for ArenaParallelSparseTrie {
                         continue;
                     }
 
+                    let num_subtrie_updates = update_idx - subtrie_start;
+
+                    if num_subtrie_updates < 4 {
+                        // Inline path: process small subtries in-place to avoid
+                        // take/restore/pre-scan overhead.
+                        #[cfg(feature = "metrics")]
+                        let inline_start = Instant::now();
+                        trace!(target: TRACE_TARGET, ?subtrie_root_path, num_subtrie_updates, "Updating subtrie inline");
+
+                        let ArenaSparseNode::Subtrie(subtrie) =
+                            &mut self.upper_arena[child_idx]
+                        else {
+                            unreachable!()
+                        };
+
+                        subtrie.update_leaves(subtrie_updates);
+
+                        // Handle required proofs from the inline subtrie.
+                        for (target_idx, proof) in subtrie.required_proofs.drain(..) {
+                            proof_required_fn(proof.key, proof.min_len);
+                            #[cfg(feature = "trie-debug")]
+                            recorded_proof_targets.push((proof.key, proof.min_len));
+                            let (key, _, ref update) = subtrie_updates[target_idx];
+                            updates.insert(key, update.clone());
+                        }
+
+                        // Collapse empty subtrie or propagate dirty state.
+                        self.maybe_unwrap_subtrie(&mut cursor);
+
+                        #[cfg(feature = "metrics")]
+                        {
+                            inline_subtrie_elapsed += inline_start.elapsed();
+                            inline_subtrie_count += 1;
+                        }
+
+                        // Don't increment update_idx — already advanced.
+                        continue;
+                    }
+
                     // Take subtrie for batched processing.
-                    trace!(target: TRACE_TARGET, ?subtrie_root_path, num_subtrie_updates = update_idx - subtrie_start, "Taking subtrie");
+                    trace!(target: TRACE_TARGET, ?subtrie_root_path, num_subtrie_updates, "Taking subtrie");
                     let ArenaSparseNode::Subtrie(subtrie) = mem::replace(
                         &mut self.upper_arena[child_idx],
                         ArenaSparseNode::TakenSubtrie,
