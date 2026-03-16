@@ -38,10 +38,7 @@ use reth_trie_parallel::{
     proof_task::{ProofTaskCtx, ProofWorkerHandle},
     root::ParallelStateRootError,
 };
-use reth_trie_sparse::{
-    ArenaParallelSparseTrie, ConfigurableSparseTrie, ParallelSparseTrie, ParallelismThresholds,
-    RevealableSparseTrie, SparseStateTrie,
-};
+use reth_trie_sparse::ParallelismThresholds;
 use std::{
     ops::Not,
     sync::{
@@ -60,7 +57,10 @@ pub mod prewarm;
 pub mod receipt_root_task;
 pub mod sparse_trie;
 
-use preserved_sparse_trie::{PreservedSparseTrie, SharedPreservedSparseTrie};
+pub use preserved_sparse_trie::{
+    PayloadSparseTrieCache, PayloadSparseTrieKind, PayloadSparseTrieStoreOutcome,
+    SparseTrieCheckout,
+};
 
 /// Default parallelism thresholds to use with the [`ParallelSparseTrie`].
 ///
@@ -108,7 +108,7 @@ type IteratorPayloadHandle<Evm, I, N> = PayloadHandle<
 #[derive(Debug, Clone)]
 pub struct EngineSharedCaches<Evm: ConfigureEvm> {
     execution_cache: PayloadExecutionCache,
-    sparse_state_trie: SharedPreservedSparseTrie,
+    sparse_trie_cache: PayloadSparseTrieCache,
     precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
 }
 
@@ -117,11 +117,7 @@ where
     Evm: ConfigureEvm,
 {
     fn default() -> Self {
-        Self {
-            execution_cache: Default::default(),
-            sparse_state_trie: Default::default(),
-            precompile_cache_map: Default::default(),
-        }
+        Self::with_sparse_trie_kind(PayloadSparseTrieKind::default())
     }
 }
 
@@ -129,19 +125,28 @@ impl<Evm> EngineSharedCaches<Evm>
 where
     Evm: ConfigureEvm,
 {
-    /// Returns the shared execution cache handle.
-    pub fn execution_cache(&self) -> PayloadExecutionCache {
+    /// Creates shared caches backed by the requested sparse trie implementation.
+    pub fn with_sparse_trie_kind(sparse_trie_kind: PayloadSparseTrieKind) -> Self {
+        Self {
+            execution_cache: Default::default(),
+            sparse_trie_cache: PayloadSparseTrieCache::new(sparse_trie_kind),
+            precompile_cache_map: Default::default(),
+        }
+    }
+
+    /// Returns the shared execution cache handle for engine-internal use.
+    pub(crate) fn execution_cache(&self) -> PayloadExecutionCache {
         self.execution_cache.clone()
+    }
+
+    /// Returns the shared sparse trie cache handle.
+    pub fn sparse_trie_cache(&self) -> PayloadSparseTrieCache {
+        self.sparse_trie_cache.clone()
     }
 
     /// Returns the shared precompile cache map.
     pub fn precompile_cache_map(&self) -> PrecompileCacheMap<SpecFor<Evm>> {
         self.precompile_cache_map.clone()
-    }
-
-    /// Returns the shared sparse trie handle for engine-internal use.
-    pub(crate) fn sparse_state_trie(&self) -> SharedPreservedSparseTrie {
-        self.sparse_state_trie.clone()
     }
 }
 
@@ -173,8 +178,6 @@ where
     sparse_trie_max_hot_accounts: usize,
     /// Whether sparse trie cache pruning is fully disabled.
     disable_sparse_trie_cache_pruning: bool,
-    /// Whether to use the arena-based sparse trie implementation.
-    enable_arena_sparse_trie: bool,
     /// Whether to disable cache metrics recording.
     disable_cache_metrics: bool,
 }
@@ -208,7 +211,6 @@ where
             sparse_trie_max_hot_slots: config.sparse_trie_max_hot_slots(),
             sparse_trie_max_hot_accounts: config.sparse_trie_max_hot_accounts(),
             disable_sparse_trie_cache_pruning: config.disable_sparse_trie_cache_pruning(),
-            enable_arena_sparse_trie: config.enable_arena_sparse_trie(),
             disable_cache_metrics: config.disable_cache_metrics(),
         }
     }
@@ -223,7 +225,7 @@ where
 
         // Wait for both caches in parallel using std threads
         let execution_cache = self.shared_caches.execution_cache();
-        let sparse_trie = self.shared_caches.sparse_state_trie();
+        let sparse_trie = self.shared_caches.sparse_trie_cache();
 
         // Use channels and spawn_blocking instead of std::thread::spawn
         let (execution_tx, execution_rx) = std::sync::mpsc::channel();
@@ -595,7 +597,7 @@ where
         parent_state_root: B256,
         chunk_size: usize,
     ) {
-        let preserved_sparse_trie = self.shared_caches.sparse_state_trie();
+        let sparse_trie_cache = self.shared_caches.sparse_trie_cache();
         let trie_metrics = self.trie_metrics.clone();
         let max_hot_slots = self.sparse_trie_max_hot_slots;
         let max_hot_accounts = self.sparse_trie_max_hot_accounts;
@@ -610,49 +612,19 @@ where
             let _enter = debug_span!(target: "engine::tree::payload_processor", parent: parent_span, "sparse_trie_task")
                 .entered();
 
-            // Reuse a stored SparseStateTrie if available, applying continuation logic.
-            // If this payload's parent state root matches the preserved trie's anchor,
-            // we can reuse the pruned trie structure. Otherwise, we clear the trie but
-            // keep allocations.
             let start = Instant::now();
-            let preserved = preserved_sparse_trie.take();
+            let mut checkout = sparse_trie_cache.take_or_create_for(parent_state_root);
             trie_metrics
                 .sparse_trie_cache_wait_duration_histogram
                 .record(start.elapsed().as_secs_f64());
+            checkout.set_hot_cache_capacities(max_hot_slots, max_hot_accounts);
 
-            let mut sparse_state_trie = preserved
-                .map(|preserved| preserved.into_trie_for(parent_state_root))
-                .unwrap_or_else(|| {
-                    debug!(
-                        target: "engine::tree::payload_processor",
-                        "Creating new sparse trie - no preserved trie available"
-                    );
-                    let default_trie = if enable_arena_sparse_trie {
-                        RevealableSparseTrie::blind_from(
-                            ConfigurableSparseTrie::Arena(ArenaParallelSparseTrie::default()),
-                        )
-                    } else {
-                        RevealableSparseTrie::blind_from(
-                            ConfigurableSparseTrie::HashMap(
-                                ParallelSparseTrie::default().with_parallelism_thresholds(
-                                    PARALLEL_SPARSE_TRIE_PARALLELISM_THRESHOLDS,
-                                ),
-                            ),
-                        )
-                    };
-                    SparseStateTrie::default()
-                        .with_accounts_trie(default_trie.clone())
-                        .with_default_storage_trie(default_trie)
-                        .with_updates(true)
-                });
-            sparse_state_trie.set_hot_cache_capacities(max_hot_slots, max_hot_accounts);
-
-            let mut task = SparseTrieCacheTask::new_with_trie(
+            let mut task = SparseTrieCacheTask::new_with_checkout(
                 &executor,
                 from_multi_proof,
                 proof_worker_handle,
                 trie_metrics.clone(),
-                sparse_state_trie,
+                checkout,
                 chunk_size,
             );
 
@@ -663,7 +635,7 @@ where
             // causing take() to return None and forcing it to create a new empty trie
             // instead of reusing the preserved one. Holding the guard ensures the next
             // block's take() blocks until we've stored the trie for reuse.
-            let mut guard = preserved_sparse_trie.lock();
+            let mut guard = sparse_trie_cache.lock();
 
             let task_result = result.as_ref().ok().cloned();
             // Send state root computation result - next block may start but will block on take()
@@ -678,7 +650,7 @@ where
                     SPARSE_TRIE_MAX_NODES_SHRINK_CAPACITY,
                     SPARSE_TRIE_MAX_VALUES_SHRINK_CAPACITY,
                 );
-                guard.store(PreservedSparseTrie::cleared(trie));
+                trie.store_prepared_cleared_with_guard(&mut guard);
                 drop(guard);
                 executor.spawn_drop(deferred);
                 return;
@@ -707,7 +679,7 @@ where
                 trie_metrics
                     .sparse_trie_retained_storage_tries
                     .set(trie.retained_storage_tries_count() as f64);
-                guard.store(PreservedSparseTrie::anchored(trie, result.state_root));
+                trie.store_anchored_with_guard(&mut guard, result.state_root);
                 deferred
             } else {
                 debug!(
@@ -718,7 +690,7 @@ where
                     SPARSE_TRIE_MAX_NODES_SHRINK_CAPACITY,
                     SPARSE_TRIE_MAX_VALUES_SHRINK_CAPACITY,
                 );
-                guard.store(PreservedSparseTrie::cleared(trie));
+                trie.store_prepared_cleared_with_guard(&mut guard);
                 deferred
             };
             drop(guard);
@@ -1043,7 +1015,7 @@ impl<R> Drop for CacheTaskHandle<R> {
 /// - Prepares data for state root proof computation
 /// - Runs concurrently but must not interfere with cache saves
 #[derive(Clone, Debug, Default)]
-pub struct PayloadExecutionCache {
+pub(crate) struct PayloadExecutionCache {
     /// Guarded cloneable cache identified by a block hash.
     inner: Arc<RwLock<Option<SavedCache>>>,
     /// Metrics for cache operations.
