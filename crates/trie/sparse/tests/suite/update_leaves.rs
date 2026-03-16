@@ -766,12 +766,10 @@ pub(super) fn test_update_leaves_subtrie_collapse_requests_proof<T: SparseTrie +
     assert!(!leaf_updates.is_empty(), "removal keys should remain in map after blinded hit");
 }
 
-/// Multiple keys hitting the same blinded node trigger callbacks.
+/// Multiple keys hitting the same blinded node each trigger a callback.
 ///
 /// When multiple keys in the update map all route through the same blinded node,
-/// at least one callback should fire and all keys should remain in the map for retry.
-/// Implementations may fire one callback per key, or a single callback for the blinded
-/// subtree root.
+/// the callback should be invoked once per key (not deduplicated).
 pub(super) fn test_update_leaves_multiple_keys_same_blinded_node<T: SparseTrie + Default>() {
     // Branch: nibble 0x1 = 16 revealed keys (hash node), nibble 0x2 = 16 blinded keys.
     let mut base_storage = BTreeMap::new();
@@ -811,8 +809,8 @@ pub(super) fn test_update_leaves_multiple_keys_same_blinded_node<T: SparseTrie +
     })
     .expect("update_leaves should succeed");
 
-    // At least one callback should fire for the blinded node.
-    assert!(!targets.is_empty(), "callback should fire for blinded node");
+    // Callback should fire for each key (3 invocations).
+    assert_eq!(targets.len(), 3, "callback should fire once per key hitting the blinded node");
     // All updates should remain in the map for retry.
     assert_eq!(leaf_updates.len(), 3, "all keys should remain in map after blinded hit");
 }
