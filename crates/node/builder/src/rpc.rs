@@ -1285,7 +1285,7 @@ pub trait EngineValidatorBuilder<Node: FullNodeComponents>: Send + Sync + Clone 
     type EngineValidator: EngineValidator<<Node::Types as NodeTypes>::Payload, <Node::Types as NodeTypes>::Primitives>
         + WaitForCaches;
 
-    /// Builds the tree validator with launcher-owned cache facade.
+    /// Builds the tree validator with launcher-owned shared caches.
     ///
     /// This is the primary entrypoint called by the launcher. It receives an
     /// [`EngineSharedCaches`] so the launcher retains ownership of cache handles.

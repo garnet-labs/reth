@@ -747,12 +747,11 @@ where
     }
 }
 
-/// Launcher-owned facade that groups the caches shared across engine payload processing.
+/// Launcher-owned cache bundle shared across engine payload processing.
 ///
 /// Created once by the node launcher and threaded through the engine validator build path,
-/// following the same ownership pattern as `ChangesetCache`. The facade is destructured by
-/// [`PayloadProcessor::new()`] -- the individual cache handles become private fields and
-/// internal access sites remain unchanged.
+/// following the same ownership pattern as `ChangesetCache`. Destructured by
+/// [`PayloadProcessor::new()`] into private fields.
 #[derive(Debug)]
 pub struct EngineSharedCaches<Evm: ConfigureEvm> {
     /// Execution cache handle.
