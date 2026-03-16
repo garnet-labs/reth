@@ -411,4 +411,27 @@ mod tests {
             other => panic!("expected anchored trie to survive stale checkout, got {other:?}"),
         }
     }
+
+    #[test]
+    fn stale_checkout_drop_does_not_overwrite_newer_store() {
+        let cache = PayloadSparseTrieCache::default();
+        let parent_state_root = B256::with_last_byte(5);
+        let anchored_state_root = B256::with_last_byte(6);
+
+        let stale = cache.take_or_create_for(parent_state_root);
+        let fresh = cache.take_or_create_for(parent_state_root);
+
+        assert_eq!(
+            fresh.store_anchored(anchored_state_root),
+            PayloadSparseTrieStoreOutcome::Stored
+        );
+        drop(stale);
+
+        match cache.state.lock().preserved.as_ref() {
+            Some(PreservedSparseTrie::Anchored { state_root, .. }) => {
+                assert_eq!(*state_root, anchored_state_root);
+            }
+            other => panic!("expected anchored trie to survive stale checkout drop, got {other:?}"),
+        }
+    }
 }
