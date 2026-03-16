@@ -71,6 +71,56 @@ on:
         required: false
         default: "true"
         type: boolean
+  workflow_call:
+    inputs:
+      blocks:
+        required: false
+        default: "500"
+        type: string
+      warmup:
+        required: false
+        default: "100"
+        type: string
+      baseline:
+        required: false
+        default: ""
+        type: string
+      feature:
+        required: false
+        default: ""
+        type: string
+      wait_time:
+        required: false
+        default: ""
+        type: string
+      baseline_args:
+        required: false
+        default: ""
+        type: string
+      feature_args:
+        required: false
+        default: ""
+        type: string
+      samply:
+        required: false
+        default: false
+        type: boolean
+      reth_newPayload:
+        required: false
+        default: true
+        type: boolean
+      cores:
+        required: false
+        default: "0"
+        type: string
+      no_slack:
+        required: false
+        default: false
+        type: boolean
+      abba:
+        required: false
+        default: true
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -89,7 +139,8 @@ jobs:
   reth-bench-ack:
     if: |
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && (startsWith(github.event.comment.body, '@decofe bench') || startsWith(github.event.comment.body, 'derek bench'))) ||
-      github.event_name == 'workflow_dispatch'
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'workflow_call'
     name: reth-bench-ack
     runs-on: ubuntu-latest
     outputs:
@@ -137,23 +188,25 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
+            // inputs.* works for both workflow_dispatch and workflow_call
+            const wfInputs = ${{ toJSON(inputs) }};
             let pr, actor, blocks, warmup, baseline, feature, samply, cores, bigBlocks;
 
-            if (context.eventName === 'workflow_dispatch') {
+            if (context.eventName === 'workflow_dispatch' || context.eventName === 'workflow_call') {
               actor = '${{ github.actor }}';
-              blocks = '${{ github.event.inputs.blocks }}' || '500';
-              warmup = '${{ github.event.inputs.warmup }}' || '100';
-              baseline = '${{ github.event.inputs.baseline }}';
-              feature = '${{ github.event.inputs.feature }}';
-              samply = '${{ github.event.inputs.samply }}' === 'true' ? 'true' : 'false';
-              var noSlack = '${{ github.event.inputs.no_slack }}' !== 'false' ? 'true' : 'false';
-              cores = '${{ github.event.inputs.cores }}' || '0';
+              blocks = (wfInputs.blocks || '500').toString();
+              warmup = (wfInputs.warmup || '100').toString();
+              baseline = (wfInputs.baseline || '').toString();
+              feature = (wfInputs.feature || '').toString();
+              samply = wfInputs.samply === true || wfInputs.samply === 'true' ? 'true' : 'false';
+              var noSlack = wfInputs.no_slack === true || wfInputs.no_slack === 'true' ? 'true' : 'false';
+              cores = (wfInputs.cores || '0').toString();
               bigBlocks = blocks === 'big' ? 'true' : 'false';
-              var rethNewPayload = '${{ github.event.inputs.reth_newPayload }}' !== 'false' ? 'true' : 'false';
-              var abba = '${{ github.event.inputs.abba }}' !== 'false' ? 'true' : 'false';
-              var waitTime = '${{ github.event.inputs.wait_time }}' || '';
-              var baselineNodeArgs = '${{ github.event.inputs.baseline_args }}' || '';
-              var featureNodeArgs = '${{ github.event.inputs.feature_args }}' || '';
+              var rethNewPayload = wfInputs.reth_newPayload === false || wfInputs.reth_newPayload === 'false' ? 'false' : 'true';
+              var abba = wfInputs.abba === false || wfInputs.abba === 'false' ? 'false' : 'true';
+              var waitTime = (wfInputs.wait_time || '').toString();
+              var baselineNodeArgs = (wfInputs.baseline_args || '').toString();
+              var featureNodeArgs = (wfInputs.feature_args || '').toString();
 
               // Find PR for the selected branch
               const branch = '${{ github.ref_name }}';
@@ -347,7 +400,7 @@ jobs:
                 });
                 allRuns.push(...r);
               }
-              const benchRuns = allRuns.filter(r => r.event === 'issue_comment' || r.event === 'workflow_dispatch');
+              const benchRuns = allRuns.filter(r => ['issue_comment', 'workflow_dispatch', 'workflow_call'].includes(r.event));
               const thisRun = benchRuns.find(r => r.id === context.runId);
               const thisCreatedAt = thisRun ? new Date(thisRun.created_at) : new Date();
               const totalAhead = benchRuns.filter(r => r.id !== context.runId && new Date(r.created_at) <= thisCreatedAt).length;
@@ -441,7 +494,7 @@ jobs:
                 });
                 allRuns.push(...r);
               }
-              const benchRuns = allRuns.filter(r => r.event === 'issue_comment' || r.event === 'workflow_dispatch');
+              const benchRuns = allRuns.filter(r => ['issue_comment', 'workflow_dispatch', 'workflow_call'].includes(r.event));
               const thisRun = benchRuns.find(r => r.id === context.runId);
               const thisCreatedAt = thisRun ? new Date(thisRun.created_at) : new Date();
               const totalAhead = benchRuns.filter(r => r.id !== context.runId && new Date(r.created_at) <= thisCreatedAt).length;

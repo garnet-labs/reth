@@ -1,0 +1,170 @@
+# Scheduled regression benchmarks.
+#
+# Replicates the nightly/hourly benchmark suite by calling bench.yml
+# with the appropriate parameters on a cron schedule.
+#
+# Runner contention is managed by the self-hosted runner pool itself
+# (label: [self-hosted, Linux, X64, available]). Each cron fires a
+# single benchmark; if all runners are busy the job queues naturally.
+
+on:
+  schedule:
+    # Main regression: hourly, compares previous main HEAD vs current
+    - cron: "0 * * * *"
+    # Nightly regression: daily 04:30 UTC
+    - cron: "30 4 * * *"
+    # Nightly regression (big blocks): daily 05:00 UTC
+    - cron: "0 5 * * *"
+    # Release regression: daily 08:00 UTC
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+    inputs:
+      benchmark:
+        description: "Which benchmark to run"
+        required: true
+        type: choice
+        options:
+          - main-regression
+          - nightly-regression
+          - nightly-regression-bigblocks
+          - release-regression
+
+name: scheduled benchmarks
+
+jobs:
+  # Determine which benchmark to run based on cron schedule or manual input
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      benchmark: ${{ steps.resolve.outputs.benchmark }}
+      baseline: ${{ steps.refs.outputs.baseline }}
+      feature: ${{ steps.refs.outputs.feature }}
+      skip: ${{ steps.refs.outputs.skip }}
+    steps:
+      - name: Determine benchmark type
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "benchmark=${{ inputs.benchmark }}" >> "$GITHUB_OUTPUT"
+          else
+            CRON="${{ github.event.schedule }}"
+            case "$CRON" in
+              "0 * * * *")    echo "benchmark=main-regression" >> "$GITHUB_OUTPUT" ;;
+              "30 4 * * *")   echo "benchmark=nightly-regression" >> "$GITHUB_OUTPUT" ;;
+              "0 5 * * *")    echo "benchmark=nightly-regression-bigblocks" >> "$GITHUB_OUTPUT" ;;
+              "0 8 * * *")    echo "benchmark=release-regression" >> "$GITHUB_OUTPUT" ;;
+              *)              echo "::error::Unknown cron schedule: $CRON"; exit 1 ;;
+            esac
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Resolve refs
+        id: refs
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+            const benchmark = '${{ steps.resolve.outputs.benchmark }}';
+
+            let baseline, feature, skip = 'false';
+
+            if (benchmark === 'main-regression') {
+              // Compare the commit before HEAD vs HEAD on main
+              feature = run('git rev-parse HEAD');
+              try {
+                baseline = run('git rev-parse HEAD~1');
+              } catch {
+                core.info('No previous commit found, skipping');
+                skip = 'true';
+                baseline = feature;
+              }
+
+            } else if (benchmark === 'nightly-regression' || benchmark === 'nightly-regression-bigblocks') {
+              // Compare the latest release tag vs main HEAD
+              feature = run('git rev-parse HEAD');
+              try {
+                // Find the latest vX.Y.Z release tag
+                const tags = run('git tag --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname');
+                const latestTag = tags.split('\n')[0];
+                if (!latestTag) throw new Error('No release tags found');
+                baseline = run(`git rev-parse "${latestTag}"`);
+                core.info(`Nightly: baseline=${latestTag} (${baseline}), feature=main (${feature})`);
+              } catch (e) {
+                core.info(`Could not resolve nightly baseline: ${e.message}, skipping`);
+                skip = 'true';
+                baseline = feature;
+              }
+
+            } else if (benchmark === 'release-regression') {
+              // Compare the two most recent release tags
+              try {
+                const tags = run('git tag --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-version:refname');
+                const tagList = tags.split('\n').filter(Boolean);
+                if (tagList.length < 2) throw new Error('Need at least 2 release tags');
+                feature = run(`git rev-parse "${tagList[0]}"`);
+                baseline = run(`git rev-parse "${tagList[1]}"`);
+                core.info(`Release: baseline=${tagList[1]} (${baseline}), feature=${tagList[0]} (${feature})`);
+              } catch (e) {
+                core.info(`Could not resolve release refs: ${e.message}, skipping`);
+                skip = 'true';
+                baseline = '';
+                feature = '';
+              }
+            }
+
+            core.setOutput('baseline', baseline);
+            core.setOutput('feature', feature);
+            core.setOutput('skip', skip);
+
+  main-regression:
+    needs: resolve
+    if: needs.resolve.outputs.benchmark == 'main-regression' && needs.resolve.outputs.skip != 'true'
+    uses: ./.github/workflows/bench.yml
+    secrets: inherit
+    with:
+      blocks: "2000"
+      warmup: "2000"
+      baseline: ${{ needs.resolve.outputs.baseline }}
+      feature: ${{ needs.resolve.outputs.feature }}
+      no_slack: false
+
+  nightly-regression:
+    needs: resolve
+    if: needs.resolve.outputs.benchmark == 'nightly-regression' && needs.resolve.outputs.skip != 'true'
+    uses: ./.github/workflows/bench.yml
+    secrets: inherit
+    with:
+      blocks: "2000"
+      warmup: "2000"
+      baseline: ${{ needs.resolve.outputs.baseline }}
+      feature: ${{ needs.resolve.outputs.feature }}
+      no_slack: false
+
+  nightly-regression-bigblocks:
+    needs: resolve
+    if: needs.resolve.outputs.benchmark == 'nightly-regression-bigblocks' && needs.resolve.outputs.skip != 'true'
+    uses: ./.github/workflows/bench.yml
+    secrets: inherit
+    with:
+      blocks: "big"
+      warmup: "2000"
+      baseline: ${{ needs.resolve.outputs.baseline }}
+      feature: ${{ needs.resolve.outputs.feature }}
+      no_slack: false
+
+  release-regression:
+    needs: resolve
+    if: needs.resolve.outputs.benchmark == 'release-regression' && needs.resolve.outputs.skip != 'true'
+    uses: ./.github/workflows/bench.yml
+    secrets: inherit
+    with:
+      blocks: "2000"
+      warmup: "2000"
+      baseline: ${{ needs.resolve.outputs.baseline }}
+      feature: ${{ needs.resolve.outputs.feature }}
+      no_slack: false
