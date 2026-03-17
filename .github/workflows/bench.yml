@@ -89,6 +89,10 @@ on:
         required: false
         default: ""
         type: string
+      wait_time:
+        required: false
+        default: ""
+        type: string
       baseline_args:
         required: false
         default: ""
@@ -105,6 +109,10 @@ on:
         required: false
         default: true
         type: boolean
+      cores:
+        required: false
+        default: "0"
+        type: string
       no_slack:
         required: false
         default: false
@@ -181,7 +189,7 @@ jobs:
           github-token: ${{ secrets.DEREK_PAT }}
           script: |
             // inputs.* works for both workflow_dispatch and workflow_call
-            const wfInputs = ${{ toJSON(inputs) }};
+            const wfInputs = ${{ toJSON(inputs) }} || {};
             let pr, actor, blocks, warmup, baseline, feature, samply, cores, bigBlocks;
 
             if (context.eventName === 'workflow_dispatch' || context.eventName === 'workflow_call') {
