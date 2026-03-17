@@ -922,6 +922,18 @@ impl RocksDBProvider {
         Ok(RocksDBIter { inner: iter, _marker: std::marker::PhantomData })
     }
 
+    /// Creates an iterator starting from the given key (inclusive, seek forward).
+    ///
+    /// Returns decoded `(Key, Value)` pairs starting from the first key >= `key`.
+    pub fn iter_from<T: Table>(&self, key: T::Key) -> ProviderResult<RocksDBIter<'_, T>> {
+        let cf = self.get_cf_handle::<T>()?;
+        let encoded_key = key.encode();
+        let iter = self
+            .0
+            .iterator_cf(cf, IteratorMode::From(encoded_key.as_ref(), rocksdb::Direction::Forward));
+        Ok(RocksDBIter { inner: iter, _marker: std::marker::PhantomData })
+    }
+
     /// Returns statistics for all column families in the database.
     ///
     /// Returns a vector of (`table_name`, `estimated_keys`, `estimated_size_bytes`) tuples.

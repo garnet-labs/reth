@@ -18,9 +18,18 @@ Arguments:
           - storages-history:         Storage history indices
 
   <KEY>
-          The key to get content for
+          The key to get content for. For history tables, this can be a plain address
 
 Options:
+      --block <BLOCK>
+          Target block number for history tables. Seeks to the shard containing this block. Defaults to the latest shard if not specified
+
+      --storage-key <STORAGE_KEY>
+          Storage key for storages-history table lookups
+
+      --all-shards
+          List all shards for the given key (history tables only)
+
       --raw
           Output bytes instead of human-readable decoded value
 
