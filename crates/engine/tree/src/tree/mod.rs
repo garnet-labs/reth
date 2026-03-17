@@ -1530,6 +1530,17 @@ where
                                 }
                             }
                             BeaconEngineMessage::NewPayload { payload, tx } => {
+                                let cache_wait = self.payload_validator.wait_for_caches();
+                                if !cache_wait.execution_cache.is_zero() ||
+                                    !cache_wait.sparse_trie.is_zero()
+                                {
+                                    debug!(
+                                        target: "engine::tree",
+                                        execution_cache_wait = ?cache_wait.execution_cache,
+                                        sparse_trie_wait = ?cache_wait.sparse_trie,
+                                        "Waited for caches before newPayload"
+                                    );
+                                }
                                 let start = Instant::now();
                                 let gas_used = payload.gas_used();
                                 let num_hash = payload.num_hash();
