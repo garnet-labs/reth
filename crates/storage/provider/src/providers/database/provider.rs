@@ -14,11 +14,11 @@ use crate::{
     BlockReader, BlockWriter, BundleStateInit, ChainStateBlockReader, ChainStateBlockWriter,
     DBProvider, EitherReader, EitherWriter, EitherWriterDestination, HashingWriter, HeaderProvider,
     HeaderSyncGapProvider, HistoricalStateProvider, HistoricalStateProviderRef, HistoryWriter,
-    LatestStateProvider, LatestStateProviderRef, OriginalValuesKnown, ProviderError,
-    PruneCheckpointReader, PruneCheckpointWriter, RawRocksDBBatch, RevertsInit, RocksBatchArg,
-    RocksDBProviderFactory, StageCheckpointReader, StateProviderBox, StateWriter,
-    StaticFileProviderFactory, StatsReader, StorageReader, StorageTrieWriter, TransactionVariant,
-    TransactionsProvider, TransactionsProviderExt, TrieWriter,
+    LatestStateProviderRef, OriginalValuesKnown, ProviderError, PruneCheckpointReader,
+    PruneCheckpointWriter, RawRocksDBBatch, RevertsInit, RocksBatchArg, RocksDBProviderFactory,
+    StageCheckpointReader, StateProviderBox, StateWriter, StaticFileProviderFactory, StatsReader,
+    StorageReader, StorageTrieWriter, TransactionVariant, TransactionsProvider,
+    TransactionsProviderExt, TrieWriter,
 };
 use alloy_consensus::{
     transaction::{SignerRecoverable, TransactionMeta, TxHashRef},
@@ -871,10 +871,13 @@ impl<TX: DbTx + 'static, N: NodeTypes> TryIntoHistoricalStateProvider for Databa
             });
         }
 
-        // If requesting state at the best block, use the latest state provider
-        if block_number == best_block {
-            return Ok(Box::new(LatestStateProvider::new(self)));
-        }
+        // Note: we intentionally do NOT short-circuit with `LatestStateProvider` when
+        // `block_number == best_block`. `best_block` is the `StageId::Finish` checkpoint, but
+        // during pipeline sync the Execution stage may have already committed state changes for
+        // later blocks, advancing the plain/hashed state tables past `best_block`.
+        // `LatestStateProvider` reads those tables directly and would return state from the
+        // execution frontier instead of the requested block. `HistoricalStateProvider` correctly
+        // reconstructs state via changesets regardless of where plain state currently sits.
 
         // +1 as the changeset that we want is the one that was applied after this block.
         block_number += 1;
