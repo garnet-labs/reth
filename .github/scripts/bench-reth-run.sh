@@ -118,6 +118,7 @@ RETH_ARGS=(
   --authrpc.port 8551
   --disable-discovery
   --no-persist-peers
+  --debug.startup-sync-state-idle
 )
 
 # Big blocks mode requires the testing API and skip-invalid-transactions
