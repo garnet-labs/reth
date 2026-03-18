@@ -5,8 +5,8 @@ use reth_config::config::{BlocksPerFileConfig, StaticFilesConfig};
 
 /// Default blocks per static file when running in `--minimal` node.
 ///
-/// 20000 blocks per static file allows us to prune all history every 20k blocks.
-pub const MINIMAL_BLOCKS_PER_FILE: u64 = 20_000;
+/// 10000 blocks per static file allows us to prune all history every 10k blocks.
+pub const MINIMAL_BLOCKS_PER_FILE: u64 = 10_000;
 
 /// Parameters for static files configuration
 #[derive(Debug, Args, PartialEq, Eq, Clone, Copy, Default)]
