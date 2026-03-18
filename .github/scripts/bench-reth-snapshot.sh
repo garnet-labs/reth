@@ -42,9 +42,14 @@ if [ "${1:-}" = "--check" ]; then
   exit 1
 fi
 
-RETH="${BENCH_RETH_BINARY:?BENCH_RETH_BINARY must be set}"
+RETH="${BENCH_RETH_BINARY:-$(cd "$(dirname "$0")/../.." && pwd)/../reth-feature/target/profiling/reth}"
+# When running in parallel with builds, the binary may not exist yet — wait for it.
+for _i in $(seq 1 600); do
+  [ -x "$RETH" ] && break
+  sleep 1
+done
 if [ ! -x "$RETH" ]; then
-  echo "::error::reth binary not found or not executable at $RETH"
+  echo "::error::reth binary not found or not executable at $RETH after 600s"
   exit 1
 fi
 
