@@ -73,7 +73,7 @@ jobs:
       - name: Download & extract EEST fixtures (public)
         shell: bash
         env:
-          EEST_TESTS_TAG: v4.5.0
+          EEST_TESTS_TAG: bal@v5.5.1
         run: |
           set -euo pipefail
           mkdir -p testing/ef-tests/execution-spec-tests
