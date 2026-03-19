@@ -154,6 +154,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// All storage related arguments with --storage prefix
     pub storage: StorageArgs,
+
+    /// Storage setings for the node.
+    pub storage_settings: StorageSettings,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -166,7 +169,11 @@ impl NodeConfig<ChainSpec> {
 }
 
 impl<ChainSpec> NodeConfig<ChainSpec> {
-    /// Creates a new config with given chain spec, setting all fields to default values.
+    /// Creates a new config with the given chain spec, setting all fields to default values.
+    ///
+    /// Sets storage settings to [`StorageSettings::v2()`], making it a default for new nodes.
+    /// Existing nodes retain whatever settings are persisted in their database metadata
+    /// (checked during genesis init).
     pub fn new(chain: Arc<ChainSpec>) -> Self {
         Self {
             config: None,
@@ -186,6 +193,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era: EraArgs::default(),
             static_files: StaticFilesArgs::default(),
             storage: StorageArgs::default(),
+            storage_settings: StorageSettings::v2(),
         }
     }
 
@@ -261,6 +269,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era,
             static_files,
             storage,
+            storage_settings,
             ..
         } = self;
         NodeConfig {
@@ -281,6 +290,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era,
             static_files,
             storage,
+            storage_settings,
         }
     }
 
@@ -363,24 +373,18 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
         self
     }
 
+    /// Set the storage settings for the node
+    pub const fn with_storage_settings(mut self, storage_settings: StorageSettings) -> Self {
+        self.storage_settings = storage_settings;
+        self
+    }
+
     /// Returns pruning configuration.
     pub fn prune_config(&self) -> Option<PruneConfig>
     where
         ChainSpec: EthereumHardforks,
     {
         self.pruning.prune_config(&self.chain)
-    }
-
-    /// Returns the effective storage settings for this node.
-    ///
-    /// Always returns [`StorageSettings::v2()`] — v2 storage is the default for
-    /// new nodes. Existing nodes retain whatever settings are persisted in their
-    /// database metadata (checked during genesis init).
-    ///
-    /// Existing databases retain whatever settings are persisted in their
-    /// metadata (checked during genesis init).
-    pub const fn storage_settings(&self) -> StorageSettings {
-        StorageSettings::v2()
     }
 
     /// Returns the max block that the node should run to, looking it up from the network if
@@ -578,6 +582,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             era: self.era,
             static_files: self.static_files,
             storage: self.storage,
+            storage_settings: self.storage_settings,
         }
     }
 
@@ -620,6 +625,7 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             era: self.era.clone(),
             static_files: self.static_files,
             storage: self.storage,
+            storage_settings: self.storage_settings,
         }
     }
 }
