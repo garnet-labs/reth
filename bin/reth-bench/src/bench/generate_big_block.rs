@@ -9,7 +9,9 @@ use alloy_eips::Typed2718;
 use alloy_primitives::{Bytes, B256};
 use alloy_provider::{network::AnyNetwork, Provider, RootProvider};
 use alloy_rpc_client::ClientBuilder;
-use alloy_rpc_types_engine::{ExecutionData, ExecutionPayload};
+use alloy_rpc_types_engine::{
+    CancunPayloadFields, ExecutionData, ExecutionPayload, ExecutionPayloadSidecar,
+};
 use clap::Parser;
 use eyre::Context;
 use reth_cli_runner::CliContext;
@@ -197,6 +199,32 @@ pub struct CollectionResult {
     pub next_block: u64,
 }
 
+/// Strips blob transactions (EIP-4844, type 3) from an [`ExecutionData`] and clears the
+/// sidecar's versioned hashes. Blob transactions are not supported in merged big blocks
+/// because the versioned hashes across multiple blocks cannot be reconciled.
+fn strip_blob_transactions(data: &mut ExecutionData) {
+    let txs = data.payload.transactions_mut();
+    let before = txs.len();
+    txs.retain(|tx| tx.first().copied() != Some(3));
+    let removed = before - txs.len();
+
+    if removed > 0 {
+        info!(target: "reth-bench", removed, "Stripped blob transactions from payload");
+    }
+
+    // Rebuild sidecar with empty versioned_hashes to pass validation
+    let cancun = data.sidecar.cancun().map(|c| CancunPayloadFields {
+        versioned_hashes: Vec::new(),
+        parent_beacon_block_root: c.parent_beacon_block_root,
+    });
+    let prague = data.sidecar.prague().cloned();
+    data.sidecar = match (cancun, prague) {
+        (Some(c), Some(p)) => ExecutionPayloadSidecar::v4(c, p),
+        (Some(c), None) => ExecutionPayloadSidecar::v3(c),
+        _ => ExecutionPayloadSidecar::none(),
+    };
+}
+
 /// A merged big block payload with environment switches at block boundaries.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BigBlockPayload {
@@ -332,6 +360,12 @@ impl Command {
             base_v1.receipts_root = final_receipts_root;
             base_v1.logs_bloom = final_logs_bloom;
             base_v1.block_hash = B256::ZERO;
+        }
+
+        // Strip blob transactions from the merged payload and all env_switch payloads
+        strip_blob_transactions(&mut base);
+        for (_, switch_data) in &mut env_switches {
+            strip_blob_transactions(switch_data);
         }
 
         let big_block = BigBlockPayload { execution_data: base, env_switches };
