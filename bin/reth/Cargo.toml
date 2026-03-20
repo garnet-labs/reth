@@ -107,6 +107,7 @@ js-tracer = [
 ]
 
 dev = ["reth-ethereum-cli/dev"]
+revmc = ["reth-node-ethereum/revmc"]
 
 asm-keccak = [
     "reth-node-core/asm-keccak",

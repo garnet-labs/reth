@@ -84,6 +84,7 @@ similar-asserts.workspace = true
 
 [features]
 default = []
+revmc = ["reth-evm-ethereum/revmc"]
 asm-keccak = [
     "alloy-primitives/asm-keccak",
     "reth-node-core/asm-keccak",

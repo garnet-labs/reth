@@ -2201,7 +2201,7 @@ checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
 dependencies = [
  "glob",
  "libc",
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -5041,6 +5041,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64e9829a50b42bb782c1df523f78d332fe371b10c661e78b7a3c34b0198e9fac"
 
 [[package]]
+name = "inkwell"
+version = "0.8.0"
+source = "git+https://github.com/TheDan64/inkwell?rev=d20c58f320d1eee62911ce1a274ed32a6aa99861#d20c58f320d1eee62911ce1a274ed32a6aa99861"
+dependencies = [
+ "bitflags 2.11.0",
+ "inkwell_internals",
+ "libc",
+ "llvm-sys",
+ "once_cell",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "inkwell_internals"
+version = "0.13.0"
+source = "git+https://github.com/TheDan64/inkwell?rev=d20c58f320d1eee62911ce1a274ed32a6aa99861#d20c58f320d1eee62911ce1a274ed32a6aa99861"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "inotify"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5558,6 +5581,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5675,6 +5708,20 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "llvm-sys"
+version = "221.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb985e19ce5d9d75d8a7aa741fde1a7381c092cf9e38896f57ae72bfa0a5dbe2"
+dependencies = [
+ "anyhow",
+ "cc",
+ "lazy_static",
+ "libc",
+ "regex-lite",
+ "semver 1.0.27",
+]
 
 [[package]]
 name = "lock_api"
@@ -7461,6 +7508,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
 name = "regex-syntax"
 version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8731,6 +8784,7 @@ dependencies = [
  "alloy-genesis",
  "alloy-primitives",
  "alloy-rpc-types-engine",
+ "eyre",
  "reth-chainspec",
  "reth-ethereum-forks",
  "reth-ethereum-primitives",
@@ -8740,6 +8794,7 @@ dependencies = [
  "reth-storage-errors",
  "reth-testing-utils",
  "revm",
+ "revmc",
  "secp256k1 0.30.0",
 ]
 
@@ -10609,6 +10664,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e86e468df3cf5cf59fa7ef71a3e9ccabb76bb336401ea2c0674f563104cf3c5e"
 dependencies = [
  "bitvec",
+ "paste",
  "phf",
  "revm-primitives",
  "serde",
@@ -10792,6 +10848,81 @@ dependencies = [
  "revm-bytecode",
  "revm-primitives",
  "serde",
+]
+
+[[package]]
+name = "revmc"
+version = "0.1.0"
+source = "git+https://github.com/paradigmxyz/revmc?rev=522ee6ea#522ee6ea87bdda1b44694f1be19c81855e7bee49"
+dependencies = [
+ "alloy-primitives",
+ "bitflags 2.11.0",
+ "bitvec",
+ "dashmap",
+ "either",
+ "libloading 0.9.0",
+ "revm-bytecode",
+ "revm-context-interface",
+ "revm-interpreter",
+ "revm-primitives",
+ "revm-state",
+ "revmc-backend",
+ "revmc-build",
+ "revmc-builtins",
+ "revmc-context",
+ "revmc-llvm",
+ "rustc-hash",
+ "tracing",
+]
+
+[[package]]
+name = "revmc-backend"
+version = "0.1.0"
+source = "git+https://github.com/paradigmxyz/revmc?rev=522ee6ea#522ee6ea87bdda1b44694f1be19c81855e7bee49"
+dependencies = [
+ "eyre",
+ "ruint",
+]
+
+[[package]]
+name = "revmc-build"
+version = "0.1.0"
+source = "git+https://github.com/paradigmxyz/revmc?rev=522ee6ea#522ee6ea87bdda1b44694f1be19c81855e7bee49"
+
+[[package]]
+name = "revmc-builtins"
+version = "0.1.0"
+source = "git+https://github.com/paradigmxyz/revmc?rev=522ee6ea#522ee6ea87bdda1b44694f1be19c81855e7bee49"
+dependencies = [
+ "paste",
+ "revm-bytecode",
+ "revm-context-interface",
+ "revm-interpreter",
+ "revm-primitives",
+ "revmc-backend",
+ "revmc-context",
+ "tracing",
+]
+
+[[package]]
+name = "revmc-context"
+version = "0.1.0"
+source = "git+https://github.com/paradigmxyz/revmc?rev=522ee6ea#522ee6ea87bdda1b44694f1be19c81855e7bee49"
+dependencies = [
+ "revm-interpreter",
+ "revm-primitives",
+ "ruint",
+]
+
+[[package]]
+name = "revmc-llvm"
+version = "0.1.0"
+source = "git+https://github.com/paradigmxyz/revmc?rev=522ee6ea#522ee6ea87bdda1b44694f1be19c81855e7bee49"
+dependencies = [
+ "inkwell",
+ "revmc-backend",
+ "rustc-hash",
+ "tracing",
 ]
 
 [[package]]

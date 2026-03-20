@@ -439,6 +439,38 @@ where
     }
 }
 
+/// Ethereum executor builder with revmc JIT compilation.
+///
+/// Starts a [`RevmcRuntime`] that background-compiles hot bytecodes and serves compiled functions
+/// via the [`RevmcEvmFactory`]. Falls back to the interpreter for cold or inspected execution.
+///
+/// [`RevmcRuntime`]: reth_evm_ethereum::revmc::RevmcRuntime
+/// [`RevmcEvmFactory`]: reth_evm_ethereum::revmc::RevmcEvmFactory
+#[cfg(feature = "revmc")]
+#[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
+pub struct RevmcExecutorBuilder;
+
+#[cfg(feature = "revmc")]
+impl<Types, Node> ExecutorBuilder<Node> for RevmcExecutorBuilder
+where
+    Types: NodeTypes<
+        ChainSpec: Hardforks + EthExecutorSpec + EthereumHardforks,
+        Primitives = EthPrimitives,
+    >,
+    Node: FullNodeTypes<Types = Types>,
+{
+    type EVM = EthEvmConfig<Types::ChainSpec, reth_evm_ethereum::revmc::RevmcEvmFactory>;
+
+    async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
+        use reth_evm_ethereum::revmc::RevmcRuntime;
+
+        let runtime = RevmcRuntime::start_default()?;
+        info!(target: "reth::cli", "Started revmc JIT coordinator");
+        Ok(EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), runtime.factory()))
+    }
+}
+
 /// A basic ethereum transaction pool.
 ///
 /// This contains various settings that can be configured and take precedence over the node's
