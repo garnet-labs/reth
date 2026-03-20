@@ -456,6 +456,8 @@ where
 
         let config = RuntimeConfig { enabled: jit.enabled, tuning, ..Default::default() };
         let runtime = RevmcRuntime::start(config)?;
+        let factory = runtime.factory();
+
         if jit.enabled {
             info!(target: "reth::cli",
                 hot_threshold = tuning.jit_hot_threshold,
@@ -463,7 +465,17 @@ where
                 "Started revmc JIT coordinator",
             );
         }
-        Ok(EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), runtime.factory()))
+
+        // Keep the coordinator alive until node shutdown.
+        ctx.task_executor().spawn_critical_with_graceful_shutdown_signal(
+            "revmc-jit-coordinator",
+            |shutdown| async move {
+                let _runtime = runtime;
+                let _ = shutdown.await;
+            },
+        );
+
+        Ok(EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), factory))
     }
 }
 
