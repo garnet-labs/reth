@@ -73,11 +73,11 @@ jobs:
       - name: Download & extract EEST fixtures (public)
         shell: bash
         env:
-          EEST_TESTS_TAG: bal@v5.5.1
+          EEST_TESTS_TAG: v4.5.0
         run: |
           set -euo pipefail
           mkdir -p testing/ef-tests/execution-spec-tests
-          URL="https://github.com/ethereum/execution-spec-tests/releases/download/${EEST_TESTS_TAG}/fixtures_stable.tar.gz"
+          URL="https://github.com/ethereum/execution-spec-tests/releases/download/${EEST_TESTS_TAG}/fixtures_bal.tar.gz"
           curl -L "$URL" | tar -xz --strip-components=1 -C testing/ef-tests/execution-spec-tests
       - uses: rui314/setup-mold@v1
       - uses: dtolnay/rust-toolchain@stable
