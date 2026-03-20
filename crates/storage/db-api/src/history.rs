@@ -2,7 +2,7 @@
 //!
 //! Both MDBX and RocksDB backends implement the same algorithm for pruning
 //! history shards (account history, storage history). This module extracts
-//! the decision logic into a pure planner that returns a [`ShardPrunePlan`]
+//! the decision logic into a pure planner that returns a `ShardPrunePlan`
 //! — a list of delete/put operations that backends apply with their own I/O.
 
 use crate::BlockNumberList;
