@@ -60,7 +60,7 @@ pub mod prewarm;
 pub mod receipt_root_task;
 pub mod sparse_trie;
 
-use preserved_sparse_trie::{PreservedSparseTrie, SharedPreservedSparseTrie};
+use preserved_sparse_trie::{PreservedSparseTrie, SharedPreservedSparseTrie as InternalSharedSparseTrie};
 
 /// Default parallelism thresholds to use with the [`ParallelSparseTrie`].
 ///
@@ -131,7 +131,7 @@ where
     /// A pruned `SparseStateTrie`, kept around as a cache of already revealed trie nodes and to
     /// re-use allocated memory. Stored with the block hash it was computed for to enable trie
     /// preservation across sequential payload validations.
-    sparse_state_trie: SharedPreservedSparseTrie,
+    sparse_state_trie: InternalSharedSparseTrie,
     /// LFU hot-slot capacity: max storage slots retained across prune cycles.
     sparse_trie_max_hot_slots: usize,
     /// LFU hot-account capacity: max account addresses retained across prune cycles.
@@ -171,7 +171,7 @@ where
             disable_state_cache: config.disable_state_cache(),
             precompile_cache_disabled: config.precompile_cache_disabled(),
             precompile_cache_map,
-            sparse_state_trie: SharedPreservedSparseTrie::default(),
+            sparse_state_trie: InternalSharedSparseTrie::default(),
             sparse_trie_max_hot_slots: config.sparse_trie_max_hot_slots(),
             sparse_trie_max_hot_accounts: config.sparse_trie_max_hot_accounts(),
             disable_sparse_trie_cache_pruning: config.disable_sparse_trie_cache_pruning(),
@@ -1124,6 +1124,141 @@ pub(crate) struct ExecutionCacheMetrics {
     pub(crate) execution_cache_in_use: Counter,
     /// Time spent waiting for execution cache mutex to become available.
     pub(crate) execution_cache_wait_duration: Histogram,
+}
+
+/// Shared sparse trie handle for reusing allocations across engine and builder.
+///
+/// Wraps a cleared sparse state trie in a shared handle. External crates can hold and
+/// clone this handle but cannot inspect the inner type.
+#[derive(Debug, Clone, Default)]
+pub struct SharedPreservedSparseTrie(
+    pub(crate) Arc<
+        parking_lot::Mutex<
+            Option<SparseStateTrie<ConfigurableSparseTrie, ConfigurableSparseTrie>>,
+        >,
+    >,
+);
+
+impl SharedPreservedSparseTrie {
+    /// Compute state root using the preserved sparse trie.
+    ///
+    /// Takes the cleared trie from the shared handle, computes a multiproof from the state
+    /// provider, reveals it in the trie, applies state updates, and computes root.
+    ///
+    /// Returns `None` if no preserved trie is available. On any error the trie is cleared and
+    /// returned to the shared handle so the next caller can still reuse the allocation.
+    pub fn compute_state_root(
+        &self,
+        state_provider: &dyn reth_storage_api::StateProvider,
+        hashed_state: reth_trie::HashedPostState,
+    ) -> Option<Result<(B256, reth_trie::updates::TrieUpdates), SparseTrieStateRootError>> {
+        let mut trie = self.0.lock().take()?;
+        let result = self.try_compute(&mut trie, state_provider, hashed_state);
+        self.return_trie(trie);
+        Some(result)
+    }
+
+    fn try_compute(
+        &self,
+        trie: &mut SparseStateTrie<ConfigurableSparseTrie, ConfigurableSparseTrie>,
+        state_provider: &dyn reth_storage_api::StateProvider,
+        hashed_state: reth_trie::HashedPostState,
+    ) -> Result<(B256, reth_trie::updates::TrieUpdates), SparseTrieStateRootError> {
+        use reth_trie::Nibbles;
+        use reth_trie_sparse::provider::DefaultTrieNodeProviderFactory;
+
+        // Compute multiproof targets from hashed state
+        let targets = hashed_state.multi_proof_targets();
+
+        // Get multiproof from state provider
+        let multiproof = state_provider
+            .multiproof(reth_trie::TrieInput::default(), targets)
+            .map_err(SparseTrieStateRootError::Provider)?;
+
+        // Reveal multiproof in the trie
+        trie.reveal_multiproof(multiproof)
+            .map_err(SparseTrieStateRootError::SparseTrie)?;
+
+        // Apply storage updates
+        for (address, storage) in &hashed_state.storages {
+            if storage.wiped {
+                trie.wipe_storage(*address)
+                    .map_err(SparseTrieStateRootError::SparseTrie)?;
+            }
+            for (slot, value) in &storage.storage {
+                let slot_nibbles = Nibbles::unpack(slot);
+                let encoded = alloy_rlp::encode_fixed_size(value).to_vec();
+                trie.update_storage_leaf(*address, slot_nibbles, encoded, &DefaultTrieNodeProviderFactory)
+                    .map_err(SparseTrieStateRootError::SparseTrie)?;
+            }
+        }
+
+        // Apply account updates
+        for (address, account_info) in &hashed_state.accounts {
+            match account_info {
+                Some(account) => {
+                    if !trie.update_account(*address, *account, &DefaultTrieNodeProviderFactory)
+                        .map_err(SparseTrieStateRootError::SparseTrie)?
+                    {
+                        // Account is empty and has empty storage root — remove leaf
+                        trie.remove_account_leaf(&Nibbles::unpack(*address), &DefaultTrieNodeProviderFactory)
+                            .map_err(SparseTrieStateRootError::SparseTrie)?;
+                    }
+                }
+                None => {
+                    // Account destroyed
+                    let path = Nibbles::unpack(*address);
+                    if trie.is_account_revealed(*address) {
+                        trie.remove_account_leaf(&path, &DefaultTrieNodeProviderFactory)
+                            .map_err(SparseTrieStateRootError::SparseTrie)?;
+                    }
+                }
+            }
+        }
+
+        // Compute root
+        trie.root_with_updates(&DefaultTrieNodeProviderFactory)
+            .map_err(SparseTrieStateRootError::SparseTrie)
+    }
+
+    fn return_trie(
+        &self,
+        mut trie: SparseStateTrie<ConfigurableSparseTrie, ConfigurableSparseTrie>,
+    ) {
+        trie.clear();
+        trie.shrink_to(
+            SPARSE_TRIE_MAX_NODES_SHRINK_CAPACITY,
+            SPARSE_TRIE_MAX_VALUES_SHRINK_CAPACITY,
+        );
+        self.0.lock().replace(trie);
+    }
+}
+
+/// Error from sparse trie state root computation.
+#[derive(Debug)]
+pub enum SparseTrieStateRootError {
+    /// Error from the state provider.
+    Provider(reth_provider::ProviderError),
+    /// Error from sparse trie operations.
+    SparseTrie(reth_trie_sparse::errors::SparseStateTrieError),
+}
+
+impl std::fmt::Display for SparseTrieStateRootError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Provider(e) => write!(f, "provider error: {e}"),
+            Self::SparseTrie(e) => write!(f, "sparse trie error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SparseTrieStateRootError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Provider(e) => Some(e),
+            Self::SparseTrie(e) => Some(e),
+        }
+    }
 }
 
 /// EVM context required to execute a block.
