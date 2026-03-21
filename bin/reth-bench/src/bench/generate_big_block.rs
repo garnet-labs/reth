@@ -199,37 +199,50 @@ pub struct CollectionResult {
     pub next_block: u64,
 }
 
-/// Strips blob transactions (EIP-4844, type 3) from an [`ExecutionData`] and clears the
-/// sidecar's versioned hashes. Blob transactions are not supported in merged big blocks
-/// because the versioned hashes across multiple blocks cannot be reconciled.
-fn strip_blob_transactions(data: &mut ExecutionData) {
-    let txs = data.payload.transactions_mut();
-    let before = txs.len();
-    txs.retain(|tx| tx.first().copied() != Some(3));
-    let removed = before - txs.len();
+/// Merges blob versioned hashes from all constituent blocks into the base sidecar
+/// and sums blob_gas_used, so that blob transactions are kept intact and state root
+/// computation produces the correct result.
+fn merge_blob_data(base: &mut ExecutionData, additional_blocks: &[ExecutionData]) {
+    // Collect all versioned hashes: base first, then each additional block in order
+    let mut all_versioned_hashes: Vec<B256> =
+        base.sidecar.cancun().map(|c| c.versioned_hashes.clone()).unwrap_or_default();
 
-    if removed > 0 {
-        info!(target: "reth-bench", removed, "Stripped blob transactions from payload");
+    let mut total_blob_gas_used = base.payload.as_v3().map(|v3| v3.blob_gas_used).unwrap_or(0);
+
+    for block_data in additional_blocks {
+        if let Some(cancun) = block_data.sidecar.cancun() {
+            all_versioned_hashes.extend_from_slice(&cancun.versioned_hashes);
+        }
+        if let Some(v3) = block_data.payload.as_v3() {
+            total_blob_gas_used += v3.blob_gas_used;
+        }
     }
 
-    // Zero out blob_gas_used since blob txs were removed.
-    // Keep excess_blob_gas unchanged — it's validated against the parent block's
-    // excess_blob_gas and blob_gas_used, so it must remain consistent.
-    if let Some(v3) = data.payload.as_v3_mut() {
-        v3.blob_gas_used = 0;
+    // Update blob_gas_used to the sum across all blocks
+    if let Some(v3) = base.payload.as_v3_mut() {
+        v3.blob_gas_used = total_blob_gas_used;
     }
 
-    // Rebuild sidecar with empty versioned_hashes to pass validation
-    let cancun = data.sidecar.cancun().map(|c| CancunPayloadFields {
-        versioned_hashes: Vec::new(),
+    // Rebuild sidecar with merged versioned_hashes
+    let cancun = base.sidecar.cancun().map(|c| CancunPayloadFields {
+        versioned_hashes: all_versioned_hashes,
         parent_beacon_block_root: c.parent_beacon_block_root,
     });
-    let prague = data.sidecar.prague().cloned();
-    data.sidecar = match (cancun, prague) {
+    let prague = base.sidecar.prague().cloned();
+    base.sidecar = match (cancun, prague) {
         (Some(c), Some(p)) => ExecutionPayloadSidecar::v4(c, p),
         (Some(c), None) => ExecutionPayloadSidecar::v3(c),
         _ => ExecutionPayloadSidecar::none(),
     };
+
+    if total_blob_gas_used > 0 {
+        info!(
+            target: "reth-bench",
+            total_blob_gas_used,
+            versioned_hashes = base.sidecar.cancun().map(|c| c.versioned_hashes.len()).unwrap_or(0),
+            "Merged blob data from all blocks"
+        );
+    }
 }
 
 /// A merged big block payload with environment switches at block boundaries.
@@ -368,11 +381,10 @@ impl Command {
             base_v1.logs_bloom = final_logs_bloom;
         }
 
-        // Strip blob transactions from the merged payload and all env_switch payloads
-        strip_blob_transactions(&mut base);
-        for (_, switch_data) in &mut env_switches {
-            strip_blob_transactions(switch_data);
-        }
+        // Merge blob versioned hashes from all constituent blocks into the base sidecar
+        let additional_blocks: Vec<ExecutionData> =
+            env_switches.iter().map(|(_, data)| data.clone()).collect();
+        merge_blob_data(&mut base, &additional_blocks);
 
         // Compute the real block hash from the mutated payload
         base.payload.as_v1_mut().block_hash = compute_payload_block_hash(&base)?;
