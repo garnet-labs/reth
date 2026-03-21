@@ -54,7 +54,7 @@ revm = { workspace = true, features = ["secp256k1", "blst", "c-kzg", "memory_lim
 # misc
 eyre.workspace = true
 
-revmc = { git = "https://github.com/paradigmxyz/revmc", rev = "968a0e27", default-features = false, features = ["llvm"] }
+revmc = { git = "https://github.com/paradigmxyz/revmc", rev = "9facbf70", default-features = false, features = ["llvm"] }
 
 [dev-dependencies]
 reth-db.workspace = true
