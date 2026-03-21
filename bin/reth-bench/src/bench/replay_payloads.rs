@@ -411,18 +411,7 @@ impl Command {
                     (execution_data, Vec::new())
                 };
 
-            let mut block_hash = execution_data.payload.as_v1().block_hash;
-            if block_hash.is_zero() {
-                // Legacy zero-hash payload — compute effective hash locally
-                block_hash =
-                    super::generate_big_block::compute_payload_block_hash(&execution_data)?;
-                warn!(
-                    target: "reth-bench",
-                    index,
-                    computed_hash = %block_hash,
-                    "Legacy zero-hash payload; computed effective hash locally"
-                );
-            }
+            let block_hash = execution_data.payload.as_v1().block_hash;
 
             debug!(
                 target: "reth-bench",
