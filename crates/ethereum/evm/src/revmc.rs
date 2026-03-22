@@ -12,21 +12,18 @@ use revm::{
     Inspector,
 };
 use revmc::alloy_evm as jit;
-use std::sync::{Arc, Mutex};
 
 pub use jit::JitEvm;
-pub use revmc::runtime::{
-    JitCoordinator, JitCoordinatorHandle, RuntimeConfig, RuntimeStatsSnapshot,
-};
+pub use revmc::runtime::{JitBackend, RuntimeConfig, RuntimeStatsSnapshot, RuntimeTuning};
 
 /// Newtype around [`revmc::alloy_evm::JitEvmFactory`] that implements [`Debug`].
 ///
-/// Optionally owns the [`JitCoordinator`] to keep it alive for the factory's lifetime.
+/// Optionally owns the [`JitBackend`] to keep it alive for the factory's lifetime.
 #[derive(Clone)]
 pub struct RevmcEvmFactory {
     inner: jit::JitEvmFactory,
-    /// Keeps the coordinator alive. `Mutex` because `JitCoordinator` is `!Sync`.
-    _coordinator: Arc<Mutex<JitCoordinator>>,
+    /// Keeps the backend alive.
+    _backend: JitBackend,
 }
 
 impl core::fmt::Debug for RevmcEvmFactory {
@@ -36,22 +33,18 @@ impl core::fmt::Debug for RevmcEvmFactory {
 }
 
 impl RevmcEvmFactory {
-    /// Creates a new factory that owns the coordinator.
-    pub fn new(coordinator: JitCoordinator) -> Self {
-        let handle = coordinator.handle();
-        Self {
-            inner: jit::JitEvmFactory::new(handle),
-            _coordinator: Arc::new(Mutex::new(coordinator)),
-        }
+    /// Creates a new factory that owns the backend.
+    pub fn new(backend: JitBackend) -> Self {
+        Self { inner: jit::JitEvmFactory::new(backend.clone()), _backend: backend }
     }
 
     /// Creates a [`RevmcEvmFactory`] with JIT disabled.
     ///
-    /// Starts a coordinator with `enabled: false` so lookups always return `Interpret`.
+    /// Starts a backend with `enabled: false` so lookups always return `Interpret`.
     pub fn disabled() -> Self {
-        let coordinator = JitCoordinator::start(RuntimeConfig::default())
+        let backend = JitBackend::start(RuntimeConfig::default())
             .expect("failed to start disabled revmc runtime");
-        Self::new(coordinator)
+        Self::new(backend)
     }
 }
 

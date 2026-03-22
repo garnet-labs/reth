@@ -441,8 +441,7 @@ where
     type EVM = EthEvmConfig<Types::ChainSpec, reth_evm_ethereum::revmc::RevmcEvmFactory>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        use reth_evm_ethereum::revmc::JitCoordinator;
-        use revmc::runtime::{RuntimeConfig, RuntimeTuning};
+        use reth_evm_ethereum::revmc::{JitBackend, RuntimeConfig, RuntimeTuning};
 
         let jit = &ctx.config().jit;
         let default_tuning = RuntimeTuning::default();
@@ -455,24 +454,24 @@ where
         };
 
         let config = RuntimeConfig { enabled: jit.enabled, tuning, ..Default::default() };
-        let coordinator = JitCoordinator::start(config)?;
+        let backend = JitBackend::start(config)?;
 
         if jit.enabled {
             info!(target: "reth::cli",
                 hot_threshold = tuning.jit_hot_threshold,
                 workers = tuning.jit_worker_count,
-                "Started revmc JIT coordinator",
+                "Started revmc JIT backend",
             );
         }
 
         // Periodically record JIT metrics.
-        let metrics_handle = coordinator.handle();
+        let metrics_backend = backend.clone();
         ctx.task_executor().spawn_with_graceful_shutdown_signal(|shutdown| async move {
             let mut shutdown = std::pin::pin!(shutdown);
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                        let stats = metrics_handle.stats();
+                        let stats = metrics_backend.stats();
                         reth_evm_ethereum::revmc::record_revmc_metrics(&stats);
                     }
                     _ = &mut shutdown => break,
@@ -480,8 +479,7 @@ where
             }
         });
 
-        // The factory owns the coordinator via Arc, keeping it alive.
-        let factory = reth_evm_ethereum::revmc::RevmcEvmFactory::new(coordinator);
+        let factory = reth_evm_ethereum::revmc::RevmcEvmFactory::new(backend);
 
         Ok(EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), factory))
     }
