@@ -1,7 +1,7 @@
 //! revmc JIT compiler integration for EVM execution.
 //!
-//! Re-exports types from [`revmc::alloy_evm`] and provides [`RevmcRuntime`] for managing the JIT
-//! coordinator lifetime, plus a [`RevmcEvmFactory`] newtype that implements [`Debug`].
+//! Re-exports types from [`revmc::alloy_evm`] and provides [`RevmcEvmFactory`], a newtype that
+//! implements [`Debug`].
 
 use alloy_evm::{Database, EvmEnv, EvmFactory};
 use revm::{
@@ -12,6 +12,7 @@ use revm::{
     Inspector,
 };
 use revmc::alloy_evm as jit;
+use std::sync::{Arc, Mutex};
 
 pub use jit::JitEvm;
 pub use revmc::runtime::{
@@ -19,8 +20,14 @@ pub use revmc::runtime::{
 };
 
 /// Newtype around [`revmc::alloy_evm::JitEvmFactory`] that implements [`Debug`].
+///
+/// Optionally owns the [`JitCoordinator`] to keep it alive for the factory's lifetime.
 #[derive(Clone)]
-pub struct RevmcEvmFactory(jit::JitEvmFactory);
+pub struct RevmcEvmFactory {
+    inner: jit::JitEvmFactory,
+    /// Keeps the coordinator alive. `Mutex` because `JitCoordinator` is `!Sync`.
+    _coordinator: Arc<Mutex<JitCoordinator>>,
+}
 
 impl core::fmt::Debug for RevmcEvmFactory {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -29,9 +36,22 @@ impl core::fmt::Debug for RevmcEvmFactory {
 }
 
 impl RevmcEvmFactory {
-    /// Creates a new factory from a coordinator handle.
-    pub fn new(handle: JitCoordinatorHandle) -> Self {
-        Self(jit::JitEvmFactory::new(handle))
+    /// Creates a new factory that owns the coordinator.
+    pub fn new(coordinator: JitCoordinator) -> Self {
+        let handle = coordinator.handle();
+        Self {
+            inner: jit::JitEvmFactory::new(handle),
+            _coordinator: Arc::new(Mutex::new(coordinator)),
+        }
+    }
+
+    /// Creates a [`RevmcEvmFactory`] with JIT disabled.
+    ///
+    /// Starts a coordinator with `enabled: false` so lookups always return `Interpret`.
+    pub fn disabled() -> Self {
+        let coordinator = JitCoordinator::start(RuntimeConfig::default())
+            .expect("failed to start disabled revmc runtime");
+        Self::new(coordinator)
     }
 }
 
@@ -47,7 +67,7 @@ impl EvmFactory for RevmcEvmFactory {
     type Precompiles = <jit::JitEvmFactory as EvmFactory>::Precompiles;
 
     fn create_evm<DB: Database>(&self, db: DB, input: EvmEnv) -> Self::Evm<DB, NoOpInspector> {
-        self.0.create_evm(db, input)
+        self.inner.create_evm(db, input)
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -56,51 +76,7 @@ impl EvmFactory for RevmcEvmFactory {
         input: EvmEnv,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        self.0.create_evm_with_inspector(db, input, inspector)
-    }
-}
-
-/// Owns the [`JitCoordinator`] for the node's lifetime and provides handles.
-///
-/// The coordinator is not `Sync` (it owns `mpsc::Receiver`), so this type should be held in a
-/// non-shared context (e.g. main thread). Use [`RevmcRuntime::handle`] or [`RevmcRuntime::factory`]
-/// to get `Send + Sync` types for passing into the EVM pipeline.
-#[expect(missing_debug_implementations)]
-pub struct RevmcRuntime {
-    coordinator: JitCoordinator,
-}
-
-impl RevmcRuntime {
-    /// Starts the revmc runtime with the given configuration.
-    pub fn start(config: RuntimeConfig) -> eyre::Result<Self> {
-        let coordinator = JitCoordinator::start(config)?;
-        Ok(Self { coordinator })
-    }
-
-    /// Returns a clonable handle for performing lookups.
-    pub fn handle(&self) -> JitCoordinatorHandle {
-        self.coordinator.handle()
-    }
-
-    /// Returns a [`RevmcEvmFactory`] that can be used with [`EthEvmConfig`].
-    ///
-    /// [`EthEvmConfig`]: crate::EthEvmConfig
-    pub fn factory(&self) -> RevmcEvmFactory {
-        RevmcEvmFactory::new(self.handle())
-    }
-
-    /// Creates a [`RevmcEvmFactory`] with JIT disabled (no coordinator running).
-    ///
-    /// Starts a coordinator with `enabled: false` so lookups always return `Interpret`.
-    pub fn disabled_factory() -> RevmcEvmFactory {
-        let runtime =
-            Self::start(RuntimeConfig::default()).expect("failed to start disabled revmc runtime");
-        runtime.factory()
-    }
-
-    /// Shuts down the coordinator.
-    pub fn shutdown(self) -> eyre::Result<()> {
-        self.coordinator.shutdown()
+        self.inner.create_evm_with_inspector(db, input, inspector)
     }
 }
 

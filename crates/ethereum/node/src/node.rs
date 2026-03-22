@@ -441,7 +441,7 @@ where
     type EVM = EthEvmConfig<Types::ChainSpec, reth_evm_ethereum::revmc::RevmcEvmFactory>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        use reth_evm_ethereum::revmc::RevmcRuntime;
+        use reth_evm_ethereum::revmc::JitCoordinator;
         use revmc::runtime::{RuntimeConfig, RuntimeTuning};
 
         let jit = &ctx.config().jit;
@@ -455,8 +455,7 @@ where
         };
 
         let config = RuntimeConfig { enabled: jit.enabled, tuning, ..Default::default() };
-        let runtime = RevmcRuntime::start(config)?;
-        let factory = runtime.factory();
+        let coordinator = JitCoordinator::start(config)?;
 
         if jit.enabled {
             info!(target: "reth::cli",
@@ -467,7 +466,7 @@ where
         }
 
         // Periodically record JIT metrics.
-        let metrics_handle = runtime.handle();
+        let metrics_handle = coordinator.handle();
         ctx.task_executor().spawn_with_graceful_shutdown_signal(|shutdown| async move {
             let mut shutdown = std::pin::pin!(shutdown);
             loop {
@@ -481,14 +480,8 @@ where
             }
         });
 
-        // Keep the coordinator alive until node shutdown.
-        ctx.task_executor().spawn_critical_with_graceful_shutdown_signal(
-            "revmc-jit-coordinator",
-            |shutdown| async move {
-                let _runtime = runtime;
-                let _ = shutdown.await;
-            },
-        );
+        // The factory owns the coordinator via Arc, keeping it alive.
+        let factory = reth_evm_ethereum::revmc::RevmcEvmFactory::new(coordinator);
 
         Ok(EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), factory))
     }
