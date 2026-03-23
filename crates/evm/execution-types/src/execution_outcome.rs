@@ -213,6 +213,13 @@ impl<T> ExecutionOutcome<T> {
         HashedPostState::from_bundle_state::<KH>(&self.bundle.state)
     }
 
+    /// Returns [`HashedPostState`] for this execution outcome using parallel hashing.
+    /// See [`HashedPostState::from_bundle_state_parallel`] for more info.
+    #[cfg(feature = "rayon")]
+    pub fn par_hash_state_slow<KH: KeyHasher>(&self) -> HashedPostState {
+        HashedPostState::from_bundle_state_parallel::<KH>(&self.bundle.state)
+    }
+
     /// Transform block number to the index of block.
     pub const fn block_number_to_index(&self, block_number: BlockNumber) -> Option<usize> {
         if self.first_block > block_number {

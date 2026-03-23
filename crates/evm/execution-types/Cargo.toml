@@ -58,6 +58,7 @@ serde-bincode-compat = [
     "alloy-consensus/serde-bincode-compat",
     "reth-ethereum-primitives/serde-bincode-compat",
 ]
+rayon = ["reth-trie-common/rayon", "reth-primitives-traits/rayon"]
 std = [
     "alloy-eips/std",
     "alloy-primitives/std",

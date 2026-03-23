@@ -18,7 +18,9 @@ pub use rayon::*;
 use reth_primitives_traits::Account;
 
 #[cfg(feature = "rayon")]
-use rayon::prelude::{FromParallelIterator, IntoParallelIterator, ParallelIterator};
+use rayon::prelude::{
+    FromParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
 
 use revm_database::{AccountStatus, BundleAccount};
 
@@ -51,6 +53,32 @@ impl HashedPostState {
     ) -> Self {
         state
             .into_iter()
+            .map(|(address, account)| {
+                let hashed_address = KH::hash_key(address);
+                let hashed_account = account.info.as_ref().map(Into::into);
+                let hashed_storage = HashedStorage::from_plain_storage(
+                    account.status,
+                    account.storage.iter().map(|(slot, value)| (slot, &value.present_value)),
+                );
+
+                (
+                    hashed_address,
+                    hashed_account,
+                    (!hashed_storage.is_empty()).then_some(hashed_storage),
+                )
+            })
+            .collect()
+    }
+
+    /// Initialize [`HashedPostState`] from bundle state in parallel.
+    /// Hashes all changed accounts and storage entries using rayon for parallelism.
+    #[cfg(feature = "rayon")]
+    #[inline]
+    pub fn from_bundle_state_parallel<KH: KeyHasher>(
+        state: &alloy_primitives::map::AddressHashMap<BundleAccount>,
+    ) -> Self {
+        state
+            .par_iter()
             .map(|(address, account)| {
                 let hashed_address = KH::hash_key(address);
                 let hashed_account = account.info.as_ref().map(Into::into);

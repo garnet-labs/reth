@@ -492,7 +492,8 @@ where
         // state is then written separately below.
         if provider.cached_storage_settings().use_hashed_state() {
             let (hashed_state, write_result) = std::thread::scope(|s| {
-                let handle = s.spawn(|| state.hash_state_slow::<KeccakKeyHasher>().into_sorted());
+                let handle =
+                    s.spawn(|| state.par_hash_state_slow::<KeccakKeyHasher>().into_sorted());
                 let write_result = provider.write_state(
                     &state,
                     OriginalValuesKnown::Yes,
