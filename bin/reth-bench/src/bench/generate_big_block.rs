@@ -5,8 +5,9 @@
 //! [`BigBlockPayload`] JSON file containing the merged [`ExecutionData`] and environment switches
 //! at each block boundary.
 
+use alloy_consensus::TxReceipt;
 use alloy_eips::{eip1559::BaseFeeParams, eip7840::BlobParams, Typed2718};
-use alloy_primitives::{Bytes, B256};
+use alloy_primitives::{Bloom, Bytes, B256};
 use alloy_provider::{network::AnyNetwork, Provider, RootProvider};
 use alloy_rpc_client::ClientBuilder;
 use alloy_rpc_types_engine::{
@@ -19,6 +20,8 @@ use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_runner::CliContext;
 use reth_engine_primitives::BigBlockData;
 use reth_ethereum_cli::chainspec::EthereumChainSpecParser;
+use reth_ethereum_primitives::Receipt;
+use reth_primitives_traits::proofs;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use tracing::info;
@@ -299,17 +302,54 @@ impl Command {
         for big_block_idx in 0..self.num_big_blocks {
             let range_start = self.from_block + big_block_idx * self.count;
 
-            // Fetch all blocks with full transactions
+            // Fetch all blocks with full transactions and their receipts
             let mut blocks = Vec::with_capacity(self.count as usize);
+            let mut block_receipts: Vec<Vec<Receipt>> = Vec::with_capacity(self.count as usize);
             for i in 0..self.count {
                 let block_number = range_start + i;
                 info!(target: "reth-bench", block_number, big_block = big_block_idx, "Fetching block");
 
-                let rpc_block = provider
-                    .get_block_by_number(block_number.into())
-                    .full()
-                    .await?
-                    .ok_or_else(|| eyre::eyre!("Block {} not found", block_number))?;
+                let (rpc_block, receipts) = tokio::try_join!(
+                    async {
+                        provider.get_block_by_number(block_number.into()).full().await?.ok_or_else(
+                            || {
+                                alloy_transport::TransportError::local_usage_str(&format!(
+                                    "Block {block_number} not found"
+                                ))
+                            },
+                        )
+                    },
+                    async {
+                        provider.get_block_receipts(block_number.into()).await?.ok_or_else(|| {
+                            alloy_transport::TransportError::local_usage_str(&format!(
+                                "Receipts not found for block {block_number}"
+                            ))
+                        })
+                    }
+                )?;
+
+                // Convert RPC receipts to consensus receipts
+                let consensus_receipts: Vec<Receipt> = receipts
+                    .iter()
+                    .map(|r| {
+                        let inner = &r.inner.inner.inner;
+                        let tx_type = r.inner.inner.r#type.try_into().unwrap_or_default();
+                        Receipt {
+                            tx_type,
+                            success: inner.receipt.status.coerce_status(),
+                            cumulative_gas_used: inner.receipt.cumulative_gas_used,
+                            logs: inner
+                                .receipt
+                                .logs
+                                .iter()
+                                .map(|log| alloy_primitives::Log {
+                                    address: log.inner.address,
+                                    data: log.inner.data.clone(),
+                                })
+                                .collect(),
+                        }
+                    })
+                    .collect();
 
                 // Convert to consensus block
                 let block = rpc_block
@@ -329,15 +369,33 @@ impl Command {
                     block_number,
                     gas_used = execution_data.payload.as_v1().gas_used,
                     tx_count = execution_data.payload.transactions().len(),
+                    receipts = consensus_receipts.len(),
                     "Fetched block"
                 );
 
                 blocks.push(execution_data);
+                block_receipts.push(consensus_receipts);
             }
 
             // Block 0 is the base
             let mut base = blocks.remove(0);
+            let base_receipts = block_receipts.remove(0);
             let mut env_switches = Vec::new();
+
+            // Accumulate all receipts with corrected cumulative_gas_used.
+            // Each block's receipts have cumulative gas relative to that block;
+            // we add the prior blocks' total gas to make them globally correct.
+            let mut all_receipts: Vec<Receipt> = Vec::new();
+            let mut cumulative_gas_offset: u64 = 0;
+            {
+                // Base block receipts (block 0) — no offset needed
+                let base_block_gas = base.payload.as_v1().gas_used;
+                all_receipts.extend(base_receipts.into_iter().map(|mut r| {
+                    r.cumulative_gas_used += cumulative_gas_offset;
+                    r
+                }));
+                cumulative_gas_offset += base_block_gas;
+            }
 
             if !blocks.is_empty() {
                 // Store the original unmutated base block as env_switch at index 0.
@@ -352,17 +410,23 @@ impl Command {
                 let last = blocks.last().unwrap();
                 let last_v1 = last.payload.as_v1();
                 let final_state_root = last_v1.state_root;
-                let final_receipts_root = last_v1.receipts_root;
-                let final_logs_bloom = last_v1.logs_bloom;
 
                 let mut total_gas_used = base.payload.as_v1().gas_used;
                 let mut total_gas_limit = base.payload.as_v1().gas_limit;
 
                 // Concatenate transactions from subsequent blocks and build env_switches
-                for block_data in blocks {
+                for (block_data, receipts) in blocks.into_iter().zip(block_receipts.into_iter()) {
                     let block_v1 = block_data.payload.as_v1();
-                    total_gas_used += block_v1.gas_used;
+                    let block_gas = block_v1.gas_used;
+                    total_gas_used += block_gas;
                     total_gas_limit += block_v1.gas_limit;
+
+                    // Accumulate receipts with corrected cumulative_gas_used
+                    all_receipts.extend(receipts.into_iter().map(|mut r| {
+                        r.cumulative_gas_used += cumulative_gas_offset;
+                        r
+                    }));
+                    cumulative_gas_offset += block_gas;
 
                     // Record environment switch at this block boundary
                     env_switches.push((cumulative_tx_count, block_data.clone()));
@@ -373,13 +437,21 @@ impl Command {
                     base.payload.transactions_mut().extend(txs);
                 }
 
+                // Compute merged receipts_root and logs_bloom from all accumulated
+                // receipts (with globally-correct cumulative_gas_used).
+                let receipts_with_bloom: Vec<_> =
+                    all_receipts.iter().map(|r| r.with_bloom_ref()).collect();
+                let merged_receipts_root = proofs::calculate_receipt_root(&receipts_with_bloom);
+                let merged_logs_bloom =
+                    receipts_with_bloom.iter().fold(Bloom::ZERO, |bloom, r| bloom | *r.bloom_ref());
+
                 // Mutate the base payload header
                 let base_v1 = base.payload.as_v1_mut();
                 base_v1.state_root = final_state_root;
                 base_v1.gas_used = total_gas_used;
                 base_v1.gas_limit = total_gas_limit;
-                base_v1.receipts_root = final_receipts_root;
-                base_v1.logs_bloom = final_logs_bloom;
+                base_v1.receipts_root = merged_receipts_root;
+                base_v1.logs_bloom = merged_logs_bloom;
             }
 
             // Chain sequential big blocks: set parent_hash, block_number, basefee,

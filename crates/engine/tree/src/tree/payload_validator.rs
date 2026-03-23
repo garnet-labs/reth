@@ -1695,11 +1695,29 @@ where
             }
         }
 
-        // Skip validate_block_post_execution - gas_used, receipts_root, logs_bloom
-        // are expected to diverge for merged env_switch blocks
+        // Validate gas_used: the accumulated gas from all segments must match the
+        // merged header's gas_used. We check output.result.gas_used directly rather
+        // than receipts.last().cumulative_gas_used() because receipt cumulative gas
+        // counters reset at each segment boundary.
+        {
+            let header_gas_used = block.header().gas_used();
+            let executed_gas_used = output.result.gas_used;
+            if header_gas_used != executed_gas_used {
+                return Err(ConsensusError::BlockGasUsed {
+                    gas: GotExpected { got: executed_gas_used, expected: header_gas_used },
+                    gas_spent_by_tx: Default::default(),
+                }
+                .into())
+            }
+        }
+
+        // Skip receipts_root and logs_bloom validation: the merged header carries
+        // values that cannot be derived without executing all segments, and receipt
+        // cumulative gas counters reset at each segment boundary making the receipt
+        // root differ from the header's value.
         debug!(
             target: "engine::tree::payload_validator",
-            "Skipping receipt-based post-execution validation for env_switches block"
+            "Skipping receipts_root and logs_bloom validation for env_switches block"
         );
 
         // Wait for the background keccak256 hashing task to complete
