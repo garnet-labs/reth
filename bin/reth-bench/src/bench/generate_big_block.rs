@@ -569,11 +569,16 @@ impl Command {
             };
 
             // Accumulate real block hashes from this big block's env_switches for
-            // subsequent big blocks' BLOCKHASH lookups.
+            // subsequent big blocks' BLOCKHASH lookups. Cap at 256 entries since the
+            // BLOCKHASH opcode only looks back 256 blocks.
             for (_, switch_data) in &big_block.big_block_data.env_switches {
                 let block_number = switch_data.payload.as_v1().block_number;
                 let block_hash = switch_data.payload.as_v1().block_hash;
                 accumulated_block_hashes.push((block_number, block_hash));
+            }
+            if accumulated_block_hashes.len() > 256 {
+                let excess = accumulated_block_hashes.len() - 256;
+                accumulated_block_hashes.drain(..excess);
             }
 
             // Save to disk
