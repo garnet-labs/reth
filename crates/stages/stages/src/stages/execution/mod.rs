@@ -491,7 +491,7 @@ where
         // plain account/storage tables and only writes bytecodes and changesets. The hashed
         // state is then written separately below.
         if provider.cached_storage_settings().use_hashed_state() {
-            let hashed_state = std::thread::scope(|s| {
+            let (hashed_state, write_result) = std::thread::scope(|s| {
                 let handle = s.spawn(|| state.hash_state_slow::<KeccakKeyHasher>().into_sorted());
                 let write_result = provider.write_state(
                     &state,
@@ -500,8 +500,8 @@ where
                 );
                 (handle.join().expect("hash_state_slow panicked"), write_result)
             });
-            hashed_state.1?;
-            provider.write_hashed_state(&hashed_state.0)?;
+            write_result?;
+            provider.write_hashed_state(&hashed_state)?;
         } else {
             provider.write_state(&state, OriginalValuesKnown::Yes, StateWriteConfig::default())?;
         }
