@@ -72,7 +72,7 @@ where
         let components = |spec: Arc<ChainSpec>| {
             let evm_config = EthEvmConfig::new_with_evm_factory(
                 spec.clone(),
-                reth_node_ethereum::evm::revmc::RevmcEvmFactory::disabled(),
+                reth_node_ethereum::evm::factory::RethEvmFactory::disabled(),
             );
             (evm_config, Arc::new(EthBeaconConsensus::new(spec)))
         };

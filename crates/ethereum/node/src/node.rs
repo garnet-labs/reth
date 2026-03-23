@@ -421,10 +421,10 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for EthereumNode {
 
 /// A regular ethereum evm and executor builder.
 ///
-/// When `--jit` is passed, starts the revmc JIT coordinator and uses [`RevmcEvmFactory`] to
+/// When `--jit` is passed, starts the revmc JIT backend and uses [`RethEvmFactory`] to
 /// serve compiled bytecode. Otherwise uses the default [`EthEvmFactory`].
 ///
-/// [`RevmcEvmFactory`]: reth_evm_ethereum::revmc::RevmcEvmFactory
+/// [`RethEvmFactory`]: reth_evm_ethereum::factory::RethEvmFactory
 /// [`EthEvmFactory`]: alloy_evm::EthEvmFactory
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
@@ -438,10 +438,10 @@ where
     >,
     Node: FullNodeTypes<Types = Types>,
 {
-    type EVM = EthEvmConfig<Types::ChainSpec, reth_evm_ethereum::revmc::RevmcEvmFactory>;
+    type EVM = EthEvmConfig<Types::ChainSpec, reth_evm_ethereum::factory::RethEvmFactory>;
 
     async fn build_evm(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::EVM> {
-        use reth_evm_ethereum::revmc::{JitBackend, RuntimeConfig, RuntimeTuning};
+        use reth_evm_ethereum::factory::{JitBackend, RevmcMetrics, RuntimeConfig, RuntimeTuning};
 
         let jit = &ctx.config().jit;
         let default_tuning = RuntimeTuning::default();
@@ -469,20 +469,20 @@ where
 
         // Periodically record JIT metrics.
         let metrics_backend = backend.clone();
+        let revmc_metrics = RevmcMetrics::default();
         ctx.task_executor().spawn_with_graceful_shutdown_signal(|shutdown| async move {
             let mut shutdown = std::pin::pin!(shutdown);
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                        let stats = metrics_backend.stats();
-                        reth_evm_ethereum::revmc::record_revmc_metrics(&stats);
+                        revmc_metrics.record(&metrics_backend.stats());
                     }
                     _ = &mut shutdown => break,
                 }
             }
         });
 
-        let factory = reth_evm_ethereum::revmc::RevmcEvmFactory::new(backend);
+        let factory = reth_evm_ethereum::factory::RethEvmFactory::new(backend);
 
         Ok(EthEvmConfig::new_with_evm_factory(ctx.chain_spec(), factory))
     }

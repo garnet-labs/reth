@@ -1,6 +1,6 @@
 //! revmc JIT compiler integration for EVM execution.
 //!
-//! Re-exports types from [`revmc::alloy_evm`] and provides [`RevmcEvmFactory`], a newtype that
+//! Re-exports types from [`revmc::alloy_evm`] and provides [`RethEvmFactory`], a newtype that
 //! implements [`Debug`].
 
 use alloy_evm::{Database, EvmEnv, EvmFactory};
@@ -18,27 +18,27 @@ pub use revmc::runtime::{JitBackend, RuntimeConfig, RuntimeStatsSnapshot, Runtim
 
 /// Newtype around [`revmc::alloy_evm::JitEvmFactory`] that implements [`Debug`].
 ///
-/// Optionally owns the [`JitBackend`] to keep it alive for the factory's lifetime.
+/// Owns the [`JitBackend`] to keep it alive for the factory's lifetime.
 #[derive(Clone)]
-pub struct RevmcEvmFactory {
+pub struct RethEvmFactory {
     inner: jit::JitEvmFactory,
     /// Keeps the backend alive.
     _backend: JitBackend,
 }
 
-impl core::fmt::Debug for RevmcEvmFactory {
+impl core::fmt::Debug for RethEvmFactory {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("RevmcEvmFactory").finish_non_exhaustive()
+        f.debug_struct("RethEvmFactory").finish_non_exhaustive()
     }
 }
 
-impl RevmcEvmFactory {
+impl RethEvmFactory {
     /// Creates a new factory that owns the backend.
     pub fn new(backend: JitBackend) -> Self {
         Self { inner: jit::JitEvmFactory::new(backend.clone()), _backend: backend }
     }
 
-    /// Creates a [`RevmcEvmFactory`] with JIT disabled.
+    /// Creates a [`RethEvmFactory`] with JIT disabled.
     ///
     /// Starts a backend with `enabled: false` so lookups always return `Interpret`.
     pub fn disabled() -> Self {
@@ -48,7 +48,7 @@ impl RevmcEvmFactory {
     }
 }
 
-impl EvmFactory for RevmcEvmFactory {
+impl EvmFactory for RethEvmFactory {
     type Evm<DB: Database, I: Inspector<alloy_evm::eth::EthEvmContext<DB>>> =
         <jit::JitEvmFactory as EvmFactory>::Evm<DB, I>;
     type Context<DB: Database> = <jit::JitEvmFactory as EvmFactory>::Context<DB>;
@@ -73,11 +73,29 @@ impl EvmFactory for RevmcEvmFactory {
     }
 }
 
-/// Records revmc JIT runtime stats as Prometheus metrics.
-pub fn record_revmc_metrics(stats: &RuntimeStatsSnapshot) {
-    metrics::gauge!("revmc_jit_lookup_hits").set(stats.lookup_hits as f64);
-    metrics::gauge!("revmc_jit_lookup_misses").set(stats.lookup_misses as f64);
-    metrics::gauge!("revmc_jit_events_sent").set(stats.events_sent as f64);
-    metrics::gauge!("revmc_jit_events_dropped").set(stats.events_dropped as f64);
-    metrics::gauge!("revmc_jit_resident_entries").set(stats.resident_entries as f64);
+/// Prometheus metrics for revmc JIT runtime stats.
+#[derive(reth_metrics::Metrics, Clone)]
+#[metrics(scope = "revmc.jit")]
+pub struct RevmcMetrics {
+    /// Total lookups that returned a compiled function.
+    pub lookup_hits: metrics::Gauge,
+    /// Total lookups that returned interpret (not ready).
+    pub lookup_misses: metrics::Gauge,
+    /// Lookup-observed events successfully enqueued.
+    pub events_sent: metrics::Gauge,
+    /// Lookup-observed events dropped (channel full).
+    pub events_dropped: metrics::Gauge,
+    /// Number of entries in the resident compiled map.
+    pub resident_entries: metrics::Gauge,
+}
+
+impl RevmcMetrics {
+    /// Records a [`RuntimeStatsSnapshot`] into the metrics.
+    pub fn record(&self, stats: &RuntimeStatsSnapshot) {
+        self.lookup_hits.set(stats.lookup_hits as f64);
+        self.lookup_misses.set(stats.lookup_misses as f64);
+        self.events_sent.set(stats.events_sent as f64);
+        self.events_dropped.set(stats.events_dropped as f64);
+        self.resident_entries.set(stats.resident_entries as f64);
+    }
 }
