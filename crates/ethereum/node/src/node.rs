@@ -453,7 +453,10 @@ where
             ..default_tuning
         };
 
-        let config = RuntimeConfig { enabled: jit.enabled, tuning, ..Default::default() };
+        let dump_dir =
+            if jit.debug { Some(ctx.config().datadir().data_dir().join("jit")) } else { None };
+
+        let config = RuntimeConfig { enabled: jit.enabled, tuning, dump_dir, ..Default::default() };
         let backend = JitBackend::start(config)?;
 
         if jit.enabled {

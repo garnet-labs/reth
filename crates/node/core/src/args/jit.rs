@@ -26,6 +26,11 @@ pub struct JitArgs {
     /// Maximum number of pending JIT compilation jobs.
     #[arg(long = "jit.max-pending-jobs", default_value_t = Self::DEFAULT_MAX_PENDING_JOBS, help_heading = "JIT")]
     pub max_pending_jobs: usize,
+
+    /// Enable compiler debug dumps. IR, assembly, and bytecode are written to
+    /// `<datadir>/jit/<spec_id>/<code_hash>/` for each compiled contract.
+    #[arg(long = "jit.debug", default_value_t = false, help_heading = "JIT")]
+    pub debug: bool,
 }
 
 impl JitArgs {
@@ -42,6 +47,7 @@ impl Default for JitArgs {
             worker_count: None,
             channel_capacity: Self::DEFAULT_CHANNEL_CAPACITY,
             max_pending_jobs: Self::DEFAULT_MAX_PENDING_JOBS,
+            debug: false,
         }
     }
 }
