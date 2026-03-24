@@ -1471,6 +1471,7 @@ mod tests {
             state_hook.on_state(StateChangeSource::Transaction(i), &update);
         }
         drop(state_hook);
+        handle.finish_state_updates();
 
         let root_from_task = handle.state_root().expect("task failed").state_root;
         let root_from_regular = state_root(accumulated_state);
