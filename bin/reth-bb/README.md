@@ -14,36 +14,22 @@ reth-bb extends the standard Ethereum node with:
 
 ## Quick start
 
-The full workflow has four steps: **generate** big blocks, **unwind** the node, **start** reth-bb, and **replay** the payloads. The [`scripts/e2e-big-blocks.sh`](../../scripts/e2e-big-blocks.sh) script automates all of this.
+The full workflow has four steps: **build** binaries, **generate** big blocks,  **start** reth-bb, and **replay** the payloads.
 
 ### Prerequisites
 
 - A synced reth datadir for the target chain (e.g. hoodi)
 - Rust toolchain
 
-### Automated (e2e script)
+### 1. Build
 
 ```bash
-./scripts/e2e-big-blocks.sh \
-    --datadir /data/reth/hoodi \
-    --from-block 910020 \
-    --target-gas 2G \
-    --num-big-blocks 5
+cargo build --profile profiling -p reth-bb -p reth-bench
 ```
 
-Run `./scripts/e2e-big-blocks.sh --help` for all options.
+### 2. Generate big blocks
 
-### Manual steps
-
-#### 1. Build
-
-```bash
-cargo build --profile profiling -p reth -p reth-bb -p reth-bench
-```
-
-#### 2. Generate big blocks
-
-Fetch consecutive blocks from an RPC and merge them until a target gas is reached. Use `--from-block` set to the block number the node is currently synced to (i.e. the next block the node would process):
+Fetch consecutive blocks from an RPC and merge them until a target gas is reached. Use `--from-block` set to the block number following the one the node is currently synced to (i.e. the next block the node would process):
 
 ```bash
 reth-bench generate-big-block \
@@ -57,7 +43,7 @@ reth-bench generate-big-block \
 
 This produces one JSON file per big block in the output directory.
 
-#### 3. Start reth-bb
+### 3. Start reth-bb
 
 ```bash
 reth-bb node \
@@ -68,7 +54,7 @@ reth-bb node \
     -d
 ```
 
-#### 4. Replay payloads
+### 4. Replay payloads
 
 ```bash
 reth-bench replay-payloads \
