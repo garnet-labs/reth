@@ -168,11 +168,11 @@ impl<'a, N: NodePrimitives> TreeCtx<'a, N> {
 /// used as a standalone component, but rather as a building block for concrete implementations.
 ///
 /// The `X` parameter controls the block execution strategy. The default
-/// ([`DefaultBlockExecutor`]) handles standard single-segment execution; custom strategies
-/// (e.g., multi-segment big-block execution) can be plugged in via
+/// ([`BasicEngineValidatorBlockExecutor`]) handles standard single-segment execution; custom
+/// strategies (e.g., multi-segment big-block execution) can be plugged in via
 /// [`BasicEngineValidator::new_with_executor`].
 #[derive(derive_more::Debug)]
-pub struct BasicEngineValidator<P, Evm, V, X = DefaultBlockExecutor>
+pub struct BasicEngineValidator<P, Evm, V, X = BasicEngineValidatorBlockExecutor>
 where
     Evm: ConfigureEvm,
 {
@@ -205,7 +205,7 @@ where
     block_executor: X,
 }
 
-impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V, DefaultBlockExecutor>
+impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V, BasicEngineValidatorBlockExecutor>
 where
     N: NodePrimitives,
     P: DatabaseProviderFactory<
@@ -226,7 +226,8 @@ where
         + 'static,
     Evm: ConfigureEvm<Primitives = N> + 'static,
 {
-    /// Creates a new `BasicEngineValidator` with the [`DefaultBlockExecutor`] strategy.
+    /// Creates a new `BasicEngineValidator` with the [`BasicEngineValidatorBlockExecutor`]
+    /// strategy.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: P,
@@ -247,7 +248,7 @@ where
             invalid_block_hook,
             changeset_cache,
             runtime,
-            DefaultBlockExecutor,
+            BasicEngineValidatorBlockExecutor,
         )
     }
 }
@@ -446,7 +447,7 @@ where
     where
         V: PayloadValidator<T, Block = N::Block> + Clone,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
-        X: BlockExecutorStrategy<N, Evm>,
+        X: EngineValidatorBlockExecutor<N, Evm>,
     {
         // Spawn payload conversion on a background thread so it runs concurrently with the
         // rest of the function (setup + execution). For payloads this overlaps the cost of
@@ -1765,7 +1766,7 @@ pub(crate) enum StateRootStrategy {
     Synchronous,
 }
 
-/// Context provided to [`BlockExecutorStrategy`] implementations.
+/// Context provided to [`EngineValidatorBlockExecutor`] implementations.
 ///
 /// Exposes execution-related state from [`BasicEngineValidator`] without
 /// requiring direct access to the full validator.
@@ -1874,11 +1875,11 @@ where
 
 /// Strategy for executing a block within [`BasicEngineValidator`].
 ///
-/// The default implementation ([`DefaultBlockExecutor`]) handles standard
+/// The default implementation ([`BasicEngineValidatorBlockExecutor`]) handles standard
 /// single-segment execution. Custom implementations (e.g., multi-segment
 /// big-block execution) can override block execution while reusing the rest
 /// of the validation pipeline.
-pub trait BlockExecutorStrategy<N: NodePrimitives, Evm: ConfigureEvm<Primitives = N>>:
+pub trait EngineValidatorBlockExecutor<N: NodePrimitives, Evm: ConfigureEvm<Primitives = N>>:
     Send + Sync + 'static
 {
     /// Executes a block with the given state provider, environment, and payload handle.
@@ -1907,9 +1908,9 @@ pub trait BlockExecutorStrategy<N: NodePrimitives, Evm: ConfigureEvm<Primitives 
 
 /// Default block executor that handles standard single-segment execution.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct DefaultBlockExecutor;
+pub struct BasicEngineValidatorBlockExecutor;
 
-impl<N, Evm> BlockExecutorStrategy<N, Evm> for DefaultBlockExecutor
+impl<N, Evm> EngineValidatorBlockExecutor<N, Evm> for BasicEngineValidatorBlockExecutor
 where
     N: NodePrimitives,
     Evm: ConfigureEvm<Primitives = N> + 'static,
@@ -2112,7 +2113,7 @@ where
     V: PayloadValidator<Types, Block = N::Block> + Clone,
     Evm: ConfigureEngineEvm<Types::ExecutionData, Primitives = N> + 'static,
     Types: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
-    X: BlockExecutorStrategy<N, Evm>,
+    X: EngineValidatorBlockExecutor<N, Evm>,
 {
     fn validate_payload_attributes_against_header(
         &self,

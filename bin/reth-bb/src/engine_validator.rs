@@ -1,6 +1,6 @@
 //! Big-block engine validator.
 //!
-//! Provides [`BbBlockExecutor`], an implementation of [`BlockExecutorStrategy`]
+//! Provides [`BbBlockExecutor`], an implementation of [`EngineValidatorBlockExecutor`]
 //! that performs multi-segment execution when [`BigBlockData`] is present for a
 //! payload hash, and [`BbEngineValidatorBuilder`] to wire it into
 //! [`BasicEngineValidator`].
@@ -17,8 +17,8 @@ use reth_engine_tree::tree::{
     error::InsertBlockErrorKind,
     payload_processor::receipt_root_task::{IndexedReceipt, ReceiptRootTaskHandle},
     payload_validator::{
-        BasicEngineValidator, BlockExecutorStrategy, BlockOrPayload, DefaultBlockExecutor,
-        ExecuteBlockCtx,
+        BasicEngineValidator, BasicEngineValidatorBlockExecutor, BlockOrPayload,
+        EngineValidatorBlockExecutor, ExecuteBlockCtx,
     },
     precompile_cache::{CachedPrecompile, CachedPrecompileMetrics},
     ExecutionEnv, PayloadHandle,
@@ -89,7 +89,7 @@ impl<T: alloy_eips::eip2718::Typed2718 + Clone> AdjustCumulativeGas
 ///
 /// When [`BigBlockData`] has been stashed for a payload hash, the block is split
 /// into multiple EVM execution segments. Otherwise execution is delegated to
-/// [`DefaultBlockExecutor`].
+/// [`BasicEngineValidatorBlockExecutor`].
 #[derive(Debug, Clone)]
 pub struct BbBlockExecutor {
     /// Shared map of pending big-block metadata, keyed by payload hash.
@@ -101,7 +101,7 @@ impl BbBlockExecutor {
     ///
     /// If [`BigBlockData`] was stashed for this payload hash, it is consumed and
     /// converted into a multi-segment plan. Otherwise `None` is returned and the
-    /// caller should delegate to [`DefaultBlockExecutor`].
+    /// caller should delegate to [`BasicEngineValidatorBlockExecutor`].
     fn take_execution_plan<T: PayloadTypes>(
         &self,
         input: &BlockOrPayload<T>,
@@ -361,7 +361,7 @@ impl BbBlockExecutor {
     }
 }
 
-impl<Evm> BlockExecutorStrategy<EthPrimitives, Evm> for BbBlockExecutor
+impl<Evm> EngineValidatorBlockExecutor<EthPrimitives, Evm> for BbBlockExecutor
 where
     Evm: ConfigureEvm<Primitives = EthPrimitives>
         + ConfigureEngineEvm<ExecutionData, Primitives = EthPrimitives>
@@ -401,7 +401,13 @@ where
             }
             None => {
                 // No big-block data — delegate to standard single-segment execution
-                DefaultBlockExecutor.execute_block(ctx, state_provider, env, input, handle)
+                BasicEngineValidatorBlockExecutor.execute_block(
+                    ctx,
+                    state_provider,
+                    env,
+                    input,
+                    handle,
+                )
             }
         }
     }
