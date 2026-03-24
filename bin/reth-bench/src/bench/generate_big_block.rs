@@ -237,7 +237,8 @@ pub struct Command {
 
     /// Target gas usage per big block. Consecutive real blocks are merged until
     /// this gas target is reached (or exceeded by the last included block).
-    #[arg(long, value_name = "TARGET_GAS")]
+    /// Accepts optional suffixes: K (thousand), M (million), G (billion).
+    #[arg(long, value_name = "TARGET_GAS", value_parser = super::helpers::parse_gas_limit)]
     target_gas: u64,
 
     /// Number of sequential big blocks to generate.
