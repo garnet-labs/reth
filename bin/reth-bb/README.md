@@ -2,7 +2,7 @@
 
 A modified reth node for benchmarking **big block** execution — payloads that merge transactions from multiple consecutive blocks into a single block to simulate high-gas workloads.
 
-> **Not for production use.** reth-bb disables the gas-limit ramp check and blob gas validation to allow artificially large blocks. It is intended solely for performance benchmarking.
+> **Not for production use.** reth-bb disables some concensus-related validations to allow artificially large blocks. It is intended solely for performance benchmarking.
 
 ## How it works
 
@@ -43,7 +43,7 @@ cargo build --profile profiling -p reth -p reth-bb -p reth-bench
 
 #### 2. Generate big blocks
 
-Fetch consecutive blocks from an RPC and merge them until a target gas is reached:
+Fetch consecutive blocks from an RPC and merge them until a target gas is reached. Use `--from-block` set to the block number the node is currently synced to (i.e. the next block the node would process):
 
 ```bash
 reth-bench generate-big-block \
@@ -57,18 +57,7 @@ reth-bench generate-big-block \
 
 This produces one JSON file per big block in the output directory.
 
-#### 3. Unwind the node
-
-The node must be unwound to the block before the first generated payload so the replay has a clean starting state:
-
-```bash
-reth stage unwind \
-    --datadir /data/reth/hoodi \
-    --chain hoodi \
-    to-block 910019
-```
-
-#### 4. Start reth-bb
+#### 3. Start reth-bb
 
 ```bash
 reth-bb node \
@@ -79,7 +68,7 @@ reth-bb node \
     -d
 ```
 
-#### 5. Replay payloads
+#### 4. Replay payloads
 
 ```bash
 reth-bench replay-payloads \
