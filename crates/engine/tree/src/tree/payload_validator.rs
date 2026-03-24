@@ -645,8 +645,8 @@ where
             };
             block_executor.execute_block(&mut exec_ctx, state_provider, env, &input, &mut handle)
         };
-        let (output, senders, receipt_root_rx) = match execute_result {
-            Ok(output) => output,
+        let ExecuteBlockOutcome { output, senders, receipt_root_rx } = match execute_result {
+            Ok(outcome) => outcome,
             Err(err) => return self.handle_execution_error(input, err, &parent_block),
         };
         let execution_duration = execute_block_start.elapsed();
@@ -1873,12 +1873,15 @@ where
     }
 }
 
-/// Result of [`EngineValidatorBlockExecutor::execute_block`]: the execution output, the list of
-/// senders, and a receiver for the asynchronously computed receipt root and bloom.
-pub type ExecuteBlockResult<R> = Result<
-    (BlockExecutionOutput<R>, Vec<Address>, tokio::sync::oneshot::Receiver<(B256, Bloom)>),
-    InsertBlockErrorKind,
->;
+/// Output of [`EngineValidatorBlockExecutor::execute_block`].
+pub struct ExecuteBlockOutcome<R> {
+    /// The execution output containing receipts, requests, and state changes.
+    pub output: BlockExecutionOutput<R>,
+    /// Recovered transaction senders in execution order.
+    pub senders: Vec<Address>,
+    /// Receiver for the asynchronously computed receipt root and logs bloom.
+    pub receipt_root_rx: tokio::sync::oneshot::Receiver<(B256, Bloom)>,
+}
 
 /// Strategy for executing a block within [`BasicEngineValidator`].
 ///
@@ -1897,7 +1900,7 @@ pub trait EngineValidatorBlockExecutor<N: NodePrimitives, Evm: ConfigureEvm<Prim
         env: ExecutionEnv<Evm>,
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<Tx, Err, N::Receipt>,
-    ) -> ExecuteBlockResult<N::Receipt>
+    ) -> Result<ExecuteBlockOutcome<N::Receipt>, InsertBlockErrorKind>
     where
         S: StateProvider + Send,
         Tx: ExecutableTxFor<Evm>,
@@ -1922,7 +1925,7 @@ where
         env: ExecutionEnv<Evm>,
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<Tx, Err, N::Receipt>,
-    ) -> ExecuteBlockResult<N::Receipt>
+    ) -> Result<ExecuteBlockOutcome<N::Receipt>, InsertBlockErrorKind>
     where
         S: StateProvider + Send,
         Tx: ExecutableTxFor<Evm>,
@@ -2023,7 +2026,7 @@ where
         ctx.metrics.record_block_execution_gas_bucket(output.result.gas_used, execution_duration);
         debug!(target: "engine::tree::payload_validator", elapsed = ?execution_duration, "Executed block");
 
-        Ok((output, senders, result_rx))
+        Ok(ExecuteBlockOutcome { output, senders, receipt_root_rx: result_rx })
     }
 }
 

@@ -18,7 +18,7 @@ use reth_engine_tree::tree::{
     payload_processor::receipt_root_task::{IndexedReceipt, ReceiptRootTaskHandle},
     payload_validator::{
         BasicEngineValidator, BasicEngineValidatorBlockExecutor, BlockOrPayload,
-        EngineValidatorBlockExecutor, ExecuteBlockCtx, ExecuteBlockResult,
+        EngineValidatorBlockExecutor, ExecuteBlockCtx, ExecuteBlockOutcome,
     },
     precompile_cache::{CachedPrecompile, CachedPrecompileMetrics},
     ExecutionEnv, PayloadHandle,
@@ -146,7 +146,7 @@ impl BbBlockExecutor {
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<Tx, Err, reth_ethereum_primitives::Receipt>,
         plan: &BlockExecutionPlan,
-    ) -> ExecuteBlockResult<reth_ethereum_primitives::Receipt>
+    ) -> Result<ExecuteBlockOutcome<reth_ethereum_primitives::Receipt>, InsertBlockErrorKind>
     where
         Evm: ConfigureEvm<Primitives = EthPrimitives>
             + ConfigureEngineEvm<ExecutionData, Primitives = EthPrimitives>
@@ -349,7 +349,7 @@ impl BbBlockExecutor {
         ctx.metrics.record_block_execution(&output, execution_start.elapsed());
         debug!(target: "engine::bb", total_gas = gas_offset, "Multi-segment execution complete");
 
-        Ok((output, all_senders, result_rx))
+        Ok(ExecuteBlockOutcome { output, senders: all_senders, receipt_root_rx: result_rx })
     }
 }
 
@@ -366,7 +366,7 @@ where
         env: ExecutionEnv<Evm>,
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<Tx, Err, reth_ethereum_primitives::Receipt>,
-    ) -> ExecuteBlockResult<reth_ethereum_primitives::Receipt>
+    ) -> Result<ExecuteBlockOutcome<reth_ethereum_primitives::Receipt>, InsertBlockErrorKind>
     where
         S: StateProvider + Send,
         Tx: ExecutableTxFor<Evm>,
