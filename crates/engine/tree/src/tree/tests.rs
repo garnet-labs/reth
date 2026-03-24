@@ -61,8 +61,6 @@ impl reth_engine_primitives::PayloadValidator<EthEngineTypes> for MockEngineVali
     }
 }
 
-impl reth_engine_primitives::ExecutionPlanExt<ExecutionData> for MockEngineValidator {}
-
 impl EngineApiValidator<EthEngineTypes> for MockEngineValidator {
     fn validate_version_specific_fields(
         &self,

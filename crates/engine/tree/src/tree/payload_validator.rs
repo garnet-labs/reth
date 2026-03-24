@@ -62,8 +62,7 @@ use reth_chain_state::{
 };
 use reth_consensus::{ConsensusError, FullConsensus, ReceiptRootBloom};
 use reth_engine_primitives::{
-    ConfigureEngineEvm, ExecutableTxIterator, ExecutionPayload, ExecutionPlanExt, InvalidBlockHook,
-    PayloadValidator,
+    ConfigureEngineEvm, ExecutableTxIterator, ExecutionPayload, InvalidBlockHook, PayloadValidator,
 };
 use reth_errors::{BlockExecutionError, ProviderResult};
 use reth_evm::{
@@ -105,32 +104,13 @@ pub type ValidationOutcome<N, E = InsertPayloadError<BlockTy<N>>> =
     Result<(ExecutedBlock<N>, Option<Box<ExecutionTimingStats>>), E>;
 
 /// Handle to a [`HashedPostState`] computed on a background thread.
-type LazyHashedPostState = reth_tasks::LazyHandle<HashedPostState>;
+pub type LazyHashedPostState = reth_tasks::LazyHandle<HashedPostState>;
 
 /// Result type for block validation with optional timing stats.
-type InsertPayloadResult<N> = Result<
+pub type InsertPayloadResult<N> = Result<
     (ExecutedBlock<N>, Option<Box<ExecutionTimingStats>>),
     InsertPayloadError<<N as NodePrimitives>::Block>,
 >;
-
-/// Trait for receipts whose cumulative gas can be adjusted.
-///
-/// Required for big block validation where receipt cumulative gas counters reset at segment
-/// boundaries and need to be offset to produce globally-correct values.
-pub trait AdjustCumulativeGas: Clone {
-    /// Returns a clone of this receipt with `cumulative_gas_used` increased by `gas_offset`.
-    fn with_gas_offset(&self, gas_offset: u64) -> Self;
-}
-
-impl<T: alloy_eips::eip2718::Typed2718 + Clone> AdjustCumulativeGas
-    for alloy_consensus::EthereumReceipt<T>
-{
-    fn with_gas_offset(&self, gas_offset: u64) -> Self {
-        let mut receipt = self.clone();
-        receipt.cumulative_gas_used += gas_offset;
-        receipt
-    }
-}
 
 /// Context providing access to tree state during validation.
 ///
@@ -192,30 +172,30 @@ where
     Evm: ConfigureEvm,
 {
     /// Provider for database access.
-    provider: P,
+    pub provider: P,
     /// Consensus implementation for validation.
-    consensus: Arc<dyn FullConsensus<Evm::Primitives>>,
+    pub consensus: Arc<dyn FullConsensus<Evm::Primitives>>,
     /// EVM configuration.
-    evm_config: Evm,
+    pub evm_config: Evm,
     /// Configuration for the tree.
-    config: TreeConfig,
+    pub config: TreeConfig,
     /// Payload processor for state root computation.
-    payload_processor: PayloadProcessor<Evm>,
+    pub payload_processor: PayloadProcessor<Evm>,
     /// Precompile cache map.
-    precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
+    pub precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
     /// Precompile cache metrics.
-    precompile_cache_metrics: HashMap<alloy_primitives::Address, CachedPrecompileMetrics>,
+    pub precompile_cache_metrics: HashMap<alloy_primitives::Address, CachedPrecompileMetrics>,
     /// Hook to call when invalid blocks are encountered.
     #[debug(skip)]
-    invalid_block_hook: Box<dyn InvalidBlockHook<Evm::Primitives>>,
+    pub invalid_block_hook: Box<dyn InvalidBlockHook<Evm::Primitives>>,
     /// Metrics for the engine api.
-    metrics: EngineApiMetrics,
+    pub metrics: EngineApiMetrics,
     /// Validator for the payload.
-    validator: V,
+    pub validator: V,
     /// Changeset cache for in-memory trie changesets
-    changeset_cache: ChangesetCache,
+    pub changeset_cache: ChangesetCache,
     /// Task runtime for spawning parallel work.
-    runtime: reth_tasks::Runtime,
+    pub runtime: reth_tasks::Runtime,
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -348,7 +328,7 @@ where
     ///
     /// When an execution error occurs, this function checks if there are any header validation
     /// errors that should be reported instead, as header validation errors have higher priority.
-    fn handle_execution_error<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    pub fn handle_execution_error<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
         &self,
         input: BlockOrPayload<T>,
         execution_err: InsertBlockErrorKind,
@@ -408,12 +388,9 @@ where
         mut ctx: TreeCtx<'_, N>,
     ) -> InsertPayloadResult<N>
     where
-        V: PayloadValidator<T, Block = N::Block> + ExecutionPlanExt<T::ExecutionData> + Clone,
+        V: PayloadValidator<T, Block = N::Block> + Clone,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
-        N::Receipt: AdjustCumulativeGas,
     {
-        let plan = self.validator.take_execution_plan(input.hash());
-
         // Spawn payload conversion on a background thread so it runs concurrently with the
         // rest of the function (setup + execution). For payloads this overlaps the cost of
         // RLP decoding + header hashing.
@@ -506,42 +483,9 @@ where
             .into())
         };
 
-        let initial_env_data = plan.initial_execution_data;
-        let prior_block_hashes = plan.seed_block_hashes;
-        let has_env_switches = !plan.segments.is_empty();
-
-        let evm_env = if let Some(ref data) = initial_env_data {
-            let env = debug_span!(target: "engine::tree::payload_validator", "evm_env")
-                .in_scope(|| self.evm_config.evm_env_for_payload(data))
-                .map_err(NewPayloadError::other)?;
-            debug!(
-                target: "engine::tree::payload_validator",
-                "Using initial execution plan data for segment 0 EVM env"
-            );
-            env
-        } else {
-            debug_span!(target: "engine::tree::payload_validator", "evm_env")
-                .in_scope(|| self.evm_env_for(&input))
-                .map_err(NewPayloadError::other)?
-        };
-
-        debug!(
-            target: "engine::tree::payload_validator",
-            segments = plan.segments.len(),
-            has_env_switches,
-            "execution plan state"
-        );
-
-        let switch_envs: Vec<(usize, EvmEnvFor<Evm>, T::ExecutionData)> = ensure_ok!(plan
-            .segments
-            .into_iter()
-            .map(|seg| {
-                self.evm_config
-                    .evm_env_for_payload(&seg.execution_data)
-                    .map(|env| (seg.stop_before_tx, env, seg.execution_data))
-                    .map_err(|e| Box::new(e) as Box<dyn core::error::Error + Send + Sync>)
-            })
-            .collect::<Result<_, _>>());
+        let evm_env = debug_span!(target: "engine::tree::payload_validator", "evm_env")
+            .in_scope(|| self.evm_env_for(&input))
+            .map_err(NewPayloadError::other)?;
 
         let env = ExecutionEnv {
             evm_env,
@@ -621,18 +565,11 @@ where
         // The receipt root task is spawned before execution and receives receipts incrementally
         // as transactions complete, allowing parallel computation during execution.
         let execute_block_start = Instant::now();
-        let (output, senders, receipt_root_rx) = match self.execute_block(
-            state_provider,
-            env,
-            &input,
-            &mut handle,
-            switch_envs,
-            initial_env_data,
-            prior_block_hashes,
-        ) {
-            Ok(output) => output,
-            Err(err) => return self.handle_execution_error(input, err, &parent_block),
-        };
+        let (output, senders, receipt_root_rx) =
+            match self.execute_block(state_provider, env, &input, &mut handle) {
+                Ok(output) => output,
+                Err(err) => return self.handle_execution_error(input, err, &parent_block),
+            };
         let execution_duration = execute_block_start.elapsed();
 
         // After executing the block we can stop prewarming transactions
@@ -900,7 +837,7 @@ where
     }
 
     /// Return sealed block header from database or in-memory state by hash.
-    fn sealed_header_by_hash(
+    pub fn sealed_header_by_hash(
         &self,
         hash: B256,
         state: &EngineApiTreeState<N>,
@@ -918,7 +855,7 @@ where
     /// Validate if block is correct and satisfies all the consensus rules that concern the header
     /// and block body itself.
     #[instrument(level = "debug", target = "engine::tree::payload_validator", skip_all)]
-    fn validate_block_inner(
+    pub fn validate_block_inner(
         &self,
         block: &SealedBlock<N::Block>,
         transaction_root: Option<B256>,
@@ -947,15 +884,12 @@ where
     /// 4. Merges state transitions and records execution metrics
     #[instrument(level = "debug", target = "engine::tree::payload_validator", skip_all)]
     #[expect(clippy::type_complexity)]
-    fn execute_block<S, Err, T>(
+    pub fn execute_block<S, Err, T>(
         &mut self,
         state_provider: S,
         env: ExecutionEnv<Evm>,
         input: &BlockOrPayload<T>,
         handle: &mut PayloadHandle<impl ExecutableTxFor<Evm>, Err, N::Receipt>,
-        switch_envs: Vec<(usize, EvmEnvFor<Evm>, T::ExecutionData)>,
-        initial_env_data: Option<T::ExecutionData>,
-        prior_block_hashes: Vec<(u64, B256)>,
     ) -> Result<
         (
             BlockExecutionOutput<N::Receipt>,
@@ -970,19 +904,8 @@ where
         V: PayloadValidator<T, Block = N::Block>,
         T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
-        N::Receipt: AdjustCumulativeGas,
     {
         debug!(target: "engine::tree::payload_validator", "Executing block");
-
-        // Sort and split env_switch data upfront. The ExecutionData vec is declared before
-        // the executor so it outlives it (Rust drops in reverse declaration order), allowing
-        // the executor to borrow from elements across loop iterations.
-        let mut switch_envs = switch_envs;
-        switch_envs.sort_by_key(|(idx, _, _)| *idx);
-        let (switch_indices_envs, switch_data_vec): (
-            Vec<(usize, EvmEnvFor<Evm>)>,
-            Vec<T::ExecutionData>,
-        ) = switch_envs.into_iter().map(|(idx, env, data)| ((idx, env), data)).unzip();
 
         let mut db = debug_span!(target: "engine::tree", "build_state_db").in_scope(|| {
             State::builder()
@@ -991,39 +914,13 @@ where
                 .build()
         });
 
-        // Seed prior block hashes into the State's block_hashes cache so that
-        // BLOCKHASH opcodes return the correct real hashes for blocks that were
-        // merged into earlier big blocks (and thus not individually persisted).
-        if !prior_block_hashes.is_empty() {
-            debug!(
-                target: "engine::tree::payload_validator",
-                count = prior_block_hashes.len(),
-                "Seeding prior block hashes for BLOCKHASH lookups"
-            );
-            for (block_number, block_hash) in prior_block_hashes {
-                db.block_hashes.insert(block_number, block_hash);
-            }
-        }
-
-        // The initial_env_data vec is declared before the executor so it outlives it,
-        // allowing the executor to borrow from it for the initial segment's context.
-        let initial_env_data_storage = initial_env_data;
         let (spec_id, mut executor) = {
             let _span = debug_span!(target: "engine::tree", "create_evm").entered();
             let spec_id = *env.evm_env.spec_id();
             let evm = self.evm_config.evm_with_env(&mut db, env.evm_env);
-            // Use the original base block's ExecutionData for the initial segment's
-            // context when available (env_switch at tx_idx=0). This ensures correct
-            // parent_hash, withdrawals, etc. for chained big blocks where the merged
-            // payload's parent_hash is mutated.
-            let ctx = if let Some(ref data) = initial_env_data_storage {
-                self.evm_config
-                    .context_for_payload(data)
-                    .map_err(|e| InsertBlockErrorKind::Other(Box::new(e)))?
-            } else {
-                self.execution_ctx_for(input)
-                    .map_err(|e| InsertBlockErrorKind::Other(Box::new(e)))?
-            };
+            let ctx = self
+                .execution_ctx_for(input)
+                .map_err(|e| InsertBlockErrorKind::Other(Box::new(e)))?;
             let executor = self.evm_config.create_executor(evm, ctx);
             (spec_id, executor)
         };
@@ -1059,220 +956,34 @@ where
 
         let transaction_count = input.transaction_count();
         let executed_tx_index = Arc::clone(handle.executed_tx_index());
-        let has_switches = !switch_indices_envs.is_empty();
-
-        // For multi-segment execution, use non-finishing hooks for all segments except the
-        // last. Each StateHookSender sends FinishedStateUpdates on drop, which would cause
-        // the sparse trie task to finalize prematurely when intermediate executors are dropped.
-        let mut executor = if has_switches {
-            executor.with_state_hook(
-                handle.state_hook_no_finish().map(|hook| Box::new(hook) as Box<dyn OnStateHook>),
-            )
-        } else {
-            executor.with_state_hook(
-                handle.state_hook().map(|hook| Box::new(hook) as Box<dyn OnStateHook>),
-            )
-        };
-
-        // Pre-create state hooks for each env_switch segment. The last hook uses
-        // state_hook() (with FinishedStateUpdates on drop) so the sparse trie task
-        // knows when all segments are done.
-        let num_switches = switch_indices_envs.len();
-        let mut segment_state_hooks: Vec<Option<Box<dyn OnStateHook>>> = switch_indices_envs
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                if i == num_switches - 1 {
-                    // Last segment: use finishing hook
-                    handle.state_hook().map(|hook| Box::new(hook) as Box<dyn OnStateHook>)
-                } else {
-                    // Intermediate segment: use non-finishing hook
-                    handle.state_hook_no_finish().map(|hook| Box::new(hook) as Box<dyn OnStateHook>)
-                }
-            })
-            .collect();
+        let executor = executor.with_state_hook(
+            handle.state_hook().map(|hook| Box::new(hook) as Box<dyn OnStateHook>),
+        );
 
         let execution_start = Instant::now();
 
-        // Apply pre-execution changes for the initial segment (e.g., beacon root update)
-        let pre_exec_start = Instant::now();
-        debug_span!(target: "engine::tree", "pre_execution")
-            .in_scope(|| executor.apply_pre_execution_changes())?;
-        self.metrics.record_pre_execution(pre_exec_start.elapsed());
-
-        let mut senders = Vec::with_capacity(transaction_count);
-        let mut last_sent_len = 0usize;
-        let mut transactions = handle.iter_transactions();
-
-        // Accumulated result across all segments
-        let mut accumulated_receipts: Vec<N::Receipt> = Vec::new();
-        let mut accumulated_gas_used: u64 = 0;
-        let mut accumulated_blob_gas_used: u64 = 0;
-        let mut accumulated_requests = alloy_eips::eip7685::Requests::default();
-
-        // Process each segment: execute txs up to the next switch boundary, then finish
-        // the current executor (applying post-execution changes), swap the env, and continue.
-        for (i, (switch_idx, switch_env)) in switch_indices_envs.into_iter().enumerate() {
-            // Execute transactions up to this switch boundary
-            self.execute_transactions(
-                &mut executor,
-                transaction_count,
-                &mut transactions,
-                &receipt_tx,
-                &executed_tx_index,
-                &mut senders,
-                &mut last_sent_len,
-                Some(switch_idx),
-                accumulated_gas_used,
-            )?;
-
-            // Finish the current executor (applies post-execution changes: withdrawals,
-            // rewards, system calls) and reclaim the EVM + DB.
-            let (evm, segment_result) = executor.finish()?;
-            let segment_receipt_count = segment_result.receipts.len();
-            let segment_gas = segment_result.gas_used;
-            // Apply gas offset to this segment's receipts so their cumulative_gas_used
-            // values are globally correct (not relative to this segment only).
-            if accumulated_gas_used > 0 {
-                accumulated_receipts.extend(
-                    segment_result
-                        .receipts
-                        .into_iter()
-                        .map(|r| r.with_gas_offset(accumulated_gas_used)),
-                );
-            } else {
-                accumulated_receipts.extend(segment_result.receipts);
-            }
-            accumulated_gas_used += segment_gas;
-            accumulated_blob_gas_used += segment_result.blob_gas_used;
-            accumulated_requests.extend(segment_result.requests);
-
-            // Reclaim the DB from the EVM, create a new EVM with the switched env
-            let reclaimed_db = evm.into_db();
-
-            // Seed the block hash for the just-finished segment into the State's
-            // block_hashes cache. Without this, BLOCKHASH opcodes in subsequent
-            // segments that reference virtual block numbers (not yet in the DB)
-            // would return zero instead of the real hash.
-            let finished_block_number = ExecutionPayload::block_number(&switch_data_vec[i]) - 1;
-            let finished_block_hash = ExecutionPayload::parent_hash(&switch_data_vec[i]);
-            reclaimed_db.block_hashes.insert(finished_block_number, finished_block_hash);
-
-            debug!(
-                target: "engine::tree::payload_validator",
-                switch_idx,
-                segment_gas_used = segment_gas,
-                segment_receipts = segment_receipt_count,
-                total_senders = senders.len(),
-                finished_block_number,
-                %finished_block_hash,
-                "Switching EVM environment at tx boundary"
-            );
-
-            let new_evm = self.evm_config.evm_with_env(reclaimed_db, switch_env);
-            let ctx = self
-                .evm_config
-                .context_for_payload(&switch_data_vec[i])
-                .map_err(|e| InsertBlockErrorKind::Other(Box::new(e)))?;
-            executor = self.evm_config.create_executor(new_evm, ctx);
-
-            // Re-attach state hook so subsequent segments feed state changes to the
-            // state root task. Without this, only segment 0's changes are visible.
-            executor.set_state_hook(segment_state_hooks[i].take());
-
-            // Re-attach precompile cache to the new executor
-            if !self.config.precompile_cache_disabled() {
-                executor.evm_mut().precompiles_mut().map_cacheable_precompiles(
-                    |address, precompile| {
-                        let metrics = self
-                            .precompile_cache_metrics
-                            .entry(*address)
-                            .or_insert_with(|| CachedPrecompileMetrics::new_with_address(*address))
-                            .clone();
-                        CachedPrecompile::wrap(
-                            precompile,
-                            self.precompile_cache_map.cache_for_address(*address),
-                            spec_id,
-                            Some(metrics),
-                        )
-                    },
-                );
-            }
-
-            // Apply pre-execution changes for the new segment
-            executor.apply_pre_execution_changes()?;
-
-            // Reset last_sent_len so receipts from the new executor are sent to
-            // the receipt root task (the new executor's receipt count starts at 0)
-            last_sent_len = 0;
-        }
-
-        // Execute remaining transactions after the last switch (or all txs if no switches)
-        self.execute_transactions(
-            &mut executor,
+        // Execute all transactions and finalize
+        let (executor, senders) = self.execute_transactions(
+            executor,
             transaction_count,
-            &mut transactions,
+            handle.iter_transactions(),
             &receipt_tx,
             &executed_tx_index,
-            &mut senders,
-            &mut last_sent_len,
-            None,
-            accumulated_gas_used,
         )?;
         drop(receipt_tx);
 
-        // Finish the final segment
+        // Finish execution and get the result
         let post_exec_start = Instant::now();
-        let (evm, final_result) = debug_span!(target: "engine::tree", "BlockExecutor::finish")
-            .in_scope(|| executor.finish())?;
-
-        // Aggregate the final segment's results
-        debug!(
-            target: "engine::tree::payload_validator",
-            final_segment_gas = final_result.gas_used,
-            final_segment_receipts = final_result.receipts.len(),
-            total_senders = senders.len(),
-            total_accumulated_gas = accumulated_gas_used + final_result.gas_used,
-            total_accumulated_receipts = accumulated_receipts.len() + final_result.receipts.len(),
-            "Final segment completed"
-        );
-        // Apply gas offset to the final segment's receipts (same as intermediate segments).
-        if accumulated_gas_used > 0 {
-            accumulated_receipts.extend(
-                final_result.receipts.into_iter().map(|r| r.with_gas_offset(accumulated_gas_used)),
-            );
-        } else {
-            accumulated_receipts.extend(final_result.receipts);
-        }
-        accumulated_gas_used += final_result.gas_used;
-        accumulated_blob_gas_used += final_result.blob_gas_used;
-        accumulated_requests.extend(final_result.requests);
-
-        // Reclaim the DB
-        let _ = evm.into_db();
+        let (_evm, result) = debug_span!(target: "engine::tree", "BlockExecutor::finish")
+            .in_scope(|| executor.finish())
+            .map(|(evm, result)| (evm.into_db(), result))?;
         self.metrics.record_post_execution(post_exec_start.elapsed());
-
-        // Build the combined result
-        let result = alloy_evm::block::BlockExecutionResult {
-            receipts: accumulated_receipts,
-            requests: accumulated_requests,
-            gas_used: accumulated_gas_used,
-            blob_gas_used: accumulated_blob_gas_used,
-        };
 
         // Merge transitions into bundle state
         debug_span!(target: "engine::tree", "merge_transitions")
             .in_scope(|| db.merge_transitions(BundleRetention::Reverts));
 
-        let bundle = db.take_bundle();
-        debug!(
-            target: "engine::tree::payload_validator",
-            bundle_accounts = bundle.state.len(),
-            bundle_contracts = bundle.contracts.len(),
-            bundle_reverts_len = bundle.reverts.len(),
-            "Bundle state after execution"
-        );
-        let output = BlockExecutionOutput { result, state: bundle };
+        let output = BlockExecutionOutput { result, state: db.take_bundle() };
 
         let execution_duration = execution_start.elapsed();
         self.metrics.record_block_execution(&output, execution_duration);
@@ -1291,34 +1002,37 @@ where
     /// - Collecting transaction senders for later use
     ///
     /// Returns the executor (for finalization) and the collected senders.
-    fn execute_transactions<E, Tx, InnerTx, Err>(
+    pub fn execute_transactions<E, Tx, InnerTx, Err>(
         &self,
-        executor: &mut E,
-        _transaction_count: usize,
-        transactions: &mut impl Iterator<Item = Result<Tx, Err>>,
+        mut executor: E,
+        transaction_count: usize,
+        transactions: impl Iterator<Item = Result<Tx, Err>>,
         receipt_tx: &crossbeam_channel::Sender<IndexedReceipt<N::Receipt>>,
         executed_tx_index: &AtomicUsize,
-        senders: &mut Vec<Address>,
-        last_sent_len: &mut usize,
-        stop_before: Option<usize>,
-        gas_offset: u64,
-    ) -> Result<(), BlockExecutionError>
+    ) -> Result<(E, Vec<Address>), BlockExecutionError>
     where
         E: BlockExecutor<Receipt = N::Receipt>,
         Tx: alloy_evm::block::ExecutableTx<E> + alloy_evm::RecoveredTx<InnerTx>,
         InnerTx: TxHashRef,
         Err: core::error::Error + Send + Sync + 'static,
-        N::Receipt: AdjustCumulativeGas,
     {
-        let exec_span = debug_span!(target: "engine::tree", "execution").entered();
-        loop {
-            // If we've reached the switch boundary, stop executing
-            if let Some(boundary) = stop_before {
-                if senders.len() >= boundary {
-                    break;
-                }
-            }
+        let mut senders = Vec::with_capacity(transaction_count);
 
+        // Apply pre-execution changes (e.g., beacon root update)
+        let pre_exec_start = Instant::now();
+        debug_span!(target: "engine::tree", "pre_execution")
+            .in_scope(|| executor.apply_pre_execution_changes())?;
+        self.metrics.record_pre_execution(pre_exec_start.elapsed());
+
+        // Execute transactions
+        let exec_span = debug_span!(target: "engine::tree", "execution").entered();
+        let mut transactions = transactions.into_iter();
+        // Some executors may execute transactions that do not append receipts during the
+        // main loop (e.g., system transactions whose receipts are added during finalization).
+        // In that case, invoking the callback on every transaction would resend the previous
+        // receipt with the same index and can panic the ordered root builder.
+        let mut last_sent_len = 0usize;
+        loop {
             // Measure time spent waiting for next transaction from iterator
             // (e.g., parallel signature recovery)
             let wait_start = Instant::now();
@@ -1346,26 +1060,18 @@ where
             executed_tx_index.store(senders.len(), Ordering::Relaxed);
 
             let current_len = executor.receipts().len();
-            if current_len > *last_sent_len {
-                *last_sent_len = current_len;
+            if current_len > last_sent_len {
+                last_sent_len = current_len;
                 // Send the latest receipt to the background task for incremental root computation.
-                // Use senders.len() - 1 as the global tx index (senders accumulates across
-                // env_switch segments, unlike executor.receipts() which resets per segment).
-                // Apply gas_offset so the receipt has globally-correct cumulative_gas_used.
                 if let Some(receipt) = executor.receipts().last() {
-                    let tx_index = senders.len() - 1;
-                    let corrected = if gas_offset > 0 {
-                        receipt.with_gas_offset(gas_offset)
-                    } else {
-                        receipt.clone()
-                    };
-                    let _ = receipt_tx.send(IndexedReceipt::new(tx_index, corrected));
+                    let tx_index = current_len - 1;
+                    let _ = receipt_tx.send(IndexedReceipt::new(tx_index, receipt.clone()));
                 }
             }
         }
         drop(exec_span);
 
-        Ok(())
+        Ok((executor, senders))
     }
 
     /// Compute state root for the given hashed post state in parallel.
@@ -1379,7 +1085,7 @@ where
     /// Returns `Ok(_)` if computed successfully.
     /// Returns `Err(_)` if error was encountered during computation.
     #[instrument(level = "debug", target = "engine::tree::payload_validator", skip_all)]
-    fn compute_state_root_parallel(
+    pub fn compute_state_root_parallel(
         &self,
         overlay_factory: OverlayStateProviderFactory<P>,
         hashed_state: &LazyHashedPostState,
@@ -1400,7 +1106,7 @@ where
     /// Uses an overlay factory which provides the state of the parent block, along with the
     /// [`HashedPostState`] containing the changes of this block, to compute the state root and
     /// trie updates for this block.
-    fn compute_state_root_serial(
+    pub fn compute_state_root_serial(
         overlay_factory: OverlayStateProviderFactory<P>,
         hashed_state: &LazyHashedPostState,
     ) -> ProviderResult<(B256, TrieUpdates)> {
@@ -1438,7 +1144,7 @@ where
         name = "await_state_root",
         skip_all
     )]
-    fn await_state_root_with_timeout<Tx, Err, R: Send + Sync + 'static>(
+    pub fn await_state_root_with_timeout<Tx, Err, R: Send + Sync + 'static>(
         &self,
         handle: &mut PayloadHandle<Tx, Err, R>,
         overlay_factory: OverlayStateProviderFactory<P>,
@@ -1531,7 +1237,7 @@ where
     /// task implementation. When enabled via `--engine.state-root-task-compare-updates`, this
     /// method runs a separate serial state root computation and compares the resulting trie
     /// updates.
-    fn compare_trie_updates_with_serial(
+    pub fn compare_trie_updates_with_serial(
         &self,
         overlay_factory: OverlayStateProviderFactory<P>,
         hashed_state: &LazyHashedPostState,
@@ -1591,7 +1297,7 @@ where
     /// The file is written to the current working directory as
     /// `trie_debug_block_{block_number}.json`.
     #[cfg(feature = "trie-debug")]
-    fn write_trie_debug_recorders(
+    pub fn write_trie_debug_recorders(
         block_number: u64,
         recorders: &[(Option<B256>, TrieDebugRecorder)],
     ) {
@@ -1637,7 +1343,7 @@ where
     /// The `hashed_state` handle wraps the background hashed post state computation.
     #[instrument(level = "debug", target = "engine::tree::payload_validator", skip_all)]
     #[expect(clippy::too_many_arguments)]
-    fn validate_post_execution<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
+    pub fn validate_post_execution<T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>>(
         &self,
         block: &RecoveredBlock<N::Block>,
         parent_block: &SealedHeader<N::BlockHeader>,
@@ -1727,7 +1433,7 @@ where
         skip_all,
         fields(?strategy)
     )]
-    fn spawn_payload_processor<T: ExecutableTxIterator<Evm>>(
+    pub fn spawn_payload_processor<T: ExecutableTxIterator<Evm>>(
         &mut self,
         env: ExecutionEnv<Evm>,
         txs: T,
@@ -1789,7 +1495,7 @@ where
     ///
     /// This method checks if the parent is in the tree state (in-memory) or persisted to disk,
     /// and creates the appropriate provider builder.
-    fn state_provider_builder(
+    pub fn state_provider_builder(
         &self,
         hash: B256,
         state: &EngineApiTreeState<N>,
@@ -1820,7 +1526,7 @@ where
     ///
     /// Note: Use state root task only if prefix sets are empty, otherwise proof generation is
     /// too expensive because it requires walking all paths in every proof.
-    const fn plan_state_root_computation(&self) -> StateRootStrategy {
+    pub const fn plan_state_root_computation(&self) -> StateRootStrategy {
         if self.config.state_root_fallback() {
             StateRootStrategy::Synchronous
         } else if self.config.use_state_root_task() {
@@ -1831,7 +1537,7 @@ where
     }
 
     /// Called when an invalid block is encountered during validation.
-    fn on_invalid_block(
+    pub fn on_invalid_block(
         &self,
         parent_header: &SealedHeader<N::BlockHeader>,
         block: &RecoveredBlock<N::Block>,
@@ -1855,7 +1561,7 @@ where
     /// If parent is on disk (no in-memory blocks), returns `None` for the lazy overlay.
     ///
     /// Uses a cached overlay if available for the canonical head (the common case).
-    fn get_parent_lazy_overlay(
+    pub fn get_parent_lazy_overlay(
         parent_hash: B256,
         state: &EngineApiTreeState<N>,
     ) -> (Option<LazyOverlay>, B256) {
@@ -1908,7 +1614,7 @@ where
     /// The validation hot path can return immediately after state root verification,
     /// while consumers (DB writes, overlay providers, proofs) get trie data either
     /// from the completed task or via fallback computation.
-    fn spawn_deferred_trie_task(
+    pub fn spawn_deferred_trie_task(
         &self,
         block: RecoveredBlock<N::Block>,
         execution_outcome: Arc<BlockExecutionOutput<N::Receipt>>,
@@ -2033,7 +1739,7 @@ where
         )
     }
 
-    fn calculate_timing_stats(
+    pub fn calculate_timing_stats(
         &self,
         block: &RecoveredBlock<N::Block>,
         provider_stats: Arc<StateProviderStats>,
@@ -2171,7 +1877,7 @@ where
 
 /// Strategy describing how to compute the state root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StateRootStrategy {
+pub enum StateRootStrategy {
     /// Use the state root task (background sparse trie computation).
     StateRootTask,
     /// Run the parallel state root computation on the calling thread.
@@ -2255,8 +1961,8 @@ where
         + HashedPostStateProvider
         + Clone
         + 'static,
-    N: NodePrimitives<Receipt: AdjustCumulativeGas>,
-    V: PayloadValidator<Types, Block = N::Block> + ExecutionPlanExt<Types::ExecutionData> + Clone,
+    N: NodePrimitives,
+    V: PayloadValidator<Types, Block = N::Block> + Clone,
     Evm: ConfigureEngineEvm<Types::ExecutionData, Primitives = N> + 'static,
     Types: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
 {

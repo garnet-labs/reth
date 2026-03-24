@@ -211,8 +211,6 @@ impl PayloadValidator<CustomEngineTypes> for CustomEngineValidator {
     }
 }
 
-impl reth_engine_primitives::ExecutionPlanExt<ExecutionData> for CustomEngineValidator {}
-
 impl EngineApiValidator<CustomEngineTypes> for CustomEngineValidator {
     fn validate_version_specific_fields(
         &self,

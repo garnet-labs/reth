@@ -15,15 +15,12 @@ use reth_primitives_traits::{
 ///
 /// If `receipt_root_bloom` is provided, the pre-computed receipt root and logs bloom are used
 /// instead of computing them from the receipts.
-///
-/// If `skip_requests_hash_check` is true, the `requests_hash` validation (EIP-7685) is skipped.
 pub fn validate_block_post_execution<B, R, ChainSpec>(
     block: &RecoveredBlock<B>,
     chain_spec: &ChainSpec,
     receipts: &[R],
     requests: &Requests,
     receipt_root_bloom: Option<(B256, Bloom)>,
-    skip_requests_hash_check: bool,
 ) -> Result<(), ConsensusError>
 where
     B: Block,
@@ -67,9 +64,7 @@ where
     }
 
     // Validate that the header requests hash matches the calculated requests hash
-    if !skip_requests_hash_check &&
-        chain_spec.is_prague_active_at_timestamp(block.header().timestamp())
-    {
+    if chain_spec.is_prague_active_at_timestamp(block.header().timestamp()) {
         let Some(header_requests_hash) = block.header().requests_hash() else {
             return Err(ConsensusError::RequestsHashMissing)
         };
