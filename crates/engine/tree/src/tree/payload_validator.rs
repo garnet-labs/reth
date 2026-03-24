@@ -46,7 +46,7 @@ use crate::tree::{
     precompile_cache::{CachedPrecompile, CachedPrecompileMetrics, PrecompileCacheMap},
     sparse_trie::StateRootComputeOutcome,
     CacheWaitDurations, EngineApiMetrics, EngineApiTreeState, ExecutionEnv, PayloadHandle,
-    StateProviderBuilder, StateProviderDatabase, TreeConfig, WaitForCaches,
+    StateProviderDatabase, TreeConfig, WaitForCaches,
 };
 use alloy_consensus::transaction::{Either, TxHashRef};
 use alloy_eip7928::BlockAccessList;
@@ -459,17 +459,13 @@ where
         trace!(target: "engine::tree::payload_validator", "Fetching block state provider");
         let _enter =
             debug_span!(target: "engine::tree::payload_validator", "state_provider").entered();
-        let Some(provider_builder) =
-            ensure_ok!(self.state_provider_builder(parent_hash, ctx.state()))
-        else {
-            // this is pre-validated in the tree
-            return Err(InsertBlockError::new(
-                convert_to_block(input)?,
-                ProviderError::HeaderNotFound(parent_hash.into()).into(),
-            )
-            .into())
+        let mut state_provider = match self.provider.history_by_block_hash(parent_hash) {
+            Ok(p) => p,
+            Err(err) => {
+                // this is pre-validated in the tree
+                return Err(InsertBlockError::new(convert_to_block(input)?, err.into()).into())
+            }
         };
-        let mut state_provider = ensure_ok!(provider_builder.build());
         drop(_enter);
 
         // Fetch parent block. This goes to memory most of the time unless the parent block is
@@ -532,7 +528,6 @@ where
         let mut handle = ensure_ok!(self.spawn_payload_processor(
             env.clone(),
             txs,
-            provider_builder,
             overlay_factory.clone(),
             strategy,
             block_access_list,
@@ -1437,7 +1432,6 @@ where
         &mut self,
         env: ExecutionEnv<Evm>,
         txs: T,
-        provider_builder: StateProviderBuilder<N, P>,
         overlay_factory: OverlayStateProviderFactory<P>,
         strategy: StateRootStrategy,
         block_access_list: Option<Arc<BlockAccessList>>,
@@ -1457,7 +1451,7 @@ where
                 let handle = self.payload_processor.spawn(
                     env,
                     txs,
-                    provider_builder,
+                    self.provider.clone(),
                     overlay_factory,
                     &self.config,
                     block_access_list,
@@ -1476,7 +1470,7 @@ where
                 let handle = self.payload_processor.spawn_cache_exclusive(
                     env,
                     txs,
-                    provider_builder,
+                    self.provider.clone(),
                     block_access_list,
                 );
 
@@ -1489,37 +1483,6 @@ where
                 Ok(handle)
             }
         }
-    }
-
-    /// Creates a `StateProviderBuilder` for the given parent hash.
-    ///
-    /// This method checks if the parent is in the tree state (in-memory) or persisted to disk,
-    /// and creates the appropriate provider builder.
-    fn state_provider_builder(
-        &self,
-        hash: B256,
-        state: &EngineApiTreeState<N>,
-    ) -> ProviderResult<Option<StateProviderBuilder<N, P>>> {
-        if let Some((historical, blocks)) = state.tree_state.blocks_by_hash(hash) {
-            debug!(target: "engine::tree::payload_validator", %hash, %historical, "found canonical state for block in memory, creating provider builder");
-            // the block leads back to the canonical chain
-            return Ok(Some(StateProviderBuilder::new(
-                self.provider.clone(),
-                historical,
-                Some(blocks),
-            )))
-        }
-
-        // Check if the block is persisted
-        if let Some(header) = self.provider.header(hash)? {
-            debug!(target: "engine::tree::payload_validator", %hash, number = %header.number(), "found canonical state for block in database, creating provider builder");
-            // For persisted blocks, we create a builder that will fetch state directly from the
-            // database
-            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)))
-        }
-
-        debug!(target: "engine::tree::payload_validator", %hash, "no canonical state found for block");
-        Ok(None)
     }
 
     /// Determines the state root computation strategy based on configuration.

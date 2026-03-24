@@ -15,7 +15,7 @@ use crate::tree::{
     cached_state::{CachedStateProvider, SavedCache},
     payload_processor::{bal, multiproof::MultiProofMessage, PayloadExecutionCache},
     precompile_cache::{CachedPrecompile, PrecompileCacheMap},
-    ExecutionEnv, StateProviderBuilder,
+    ExecutionEnv,
 };
 use alloy_consensus::transaction::TxHashRef;
 use alloy_eip7928::BlockAccessList;
@@ -383,7 +383,7 @@ where
     fn send_bal_hashed_state(&self, bal: &BlockAccessList) {
         let Some(to_multi_proof) = &self.to_multi_proof else { return };
 
-        let provider = match self.ctx.provider.build() {
+        let provider = match self.ctx.provider.history_by_block_hash(self.ctx.env.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
                 warn!(
@@ -502,7 +502,7 @@ where
     /// The saved cache.
     pub saved_cache: Option<SavedCache>,
     /// Provider to obtain the state
-    pub provider: StateProviderBuilder<N, P>,
+    pub provider: P,
     /// The metrics for the prewarm task.
     pub metrics: PrewarmMetrics,
     /// An atomic bool that tells prewarm tasks to not start any more execution.
@@ -531,7 +531,7 @@ where
     /// Creates a per-thread EVM for prewarming.
     #[instrument(level = "debug", target = "engine::tree::payload_processor::prewarm", skip_all)]
     fn evm_for_ctx(&self) -> PrewarmEvmState<Evm> {
-        let mut state_provider = match self.provider.build() {
+        let mut state_provider = match self.provider.history_by_block_hash(self.env.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
                 trace!(
@@ -606,7 +606,7 @@ where
         let state_provider = match provider {
             Some(p) => p,
             slot @ None => {
-                let built = match self.provider.build() {
+                let built = match self.provider.history_by_block_hash(self.env.parent_hash) {
                     Ok(p) => p,
                     Err(err) => {
                         trace!(

@@ -14,7 +14,7 @@ use alloy_rpc_types_engine::{
 use error::{InsertBlockError, InsertBlockFatalError};
 use reth_chain_state::{
     CanonicalInMemoryState, ComputedTrieData, ExecutedBlock, ExecutionTimingStats,
-    MemoryOverlayStateProvider, NewCanonicalChain,
+    NewCanonicalChain,
 };
 use reth_consensus::{Consensus, FullConsensus};
 use reth_engine_primitives::{
@@ -33,8 +33,8 @@ use reth_primitives_traits::{
 use reth_provider::{
     BlockExecutionOutput, BlockExecutionResult, BlockReader, ChangeSetReader,
     DatabaseProviderFactory, HashedPostStateProvider, ProviderError, StageCheckpointReader,
-    StateProviderBox, StateProviderFactory, StateReader, StorageChangeSetReader,
-    StorageSettingsCache, TransactionVariant,
+    StateProviderFactory, StateReader, StorageChangeSetReader, StorageSettingsCache,
+    TransactionVariant,
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
@@ -93,43 +93,6 @@ pub(crate) const MIN_BLOCKS_FOR_PIPELINE_RUN: u64 = EPOCH_SLOTS;
 /// This ensures that recent trie changesets are kept in memory for potential reorgs,
 /// even when the finalized block is not set (e.g., on L2s like Optimism).
 const CHANGESET_CACHE_RETENTION_BLOCKS: u64 = 64;
-
-/// A builder for creating state providers that can be used across threads.
-#[derive(Clone, Debug)]
-pub struct StateProviderBuilder<N: NodePrimitives, P> {
-    /// The provider factory used to create providers.
-    provider_factory: P,
-    /// The historical block hash to fetch state from.
-    historical: B256,
-    /// The blocks that form the chain from historical to target and are in memory.
-    overlay: Option<Vec<ExecutedBlock<N>>>,
-}
-
-impl<N: NodePrimitives, P> StateProviderBuilder<N, P> {
-    /// Creates a new state provider from the provider factory, historical block hash and optional
-    /// overlaid blocks.
-    pub const fn new(
-        provider_factory: P,
-        historical: B256,
-        overlay: Option<Vec<ExecutedBlock<N>>>,
-    ) -> Self {
-        Self { provider_factory, historical, overlay }
-    }
-}
-
-impl<N: NodePrimitives, P> StateProviderBuilder<N, P>
-where
-    P: BlockReader + StateProviderFactory + StateReader + Clone,
-{
-    /// Creates a new state provider from this builder.
-    pub fn build(&self) -> ProviderResult<StateProviderBox> {
-        let mut provider = self.provider_factory.state_by_block_hash(self.historical)?;
-        if let Some(overlay) = self.overlay.clone() {
-            provider = Box::new(MemoryOverlayStateProvider::new(provider, overlay))
-        }
-        Ok(provider)
-    }
-}
 
 /// Tracks the state of the engine api internals.
 ///
@@ -2794,12 +2757,12 @@ where
         }
 
         // Ensure that the parent state is available.
-        match self.state_provider_builder(block_id.parent) {
+        match self.find_canonical_state_for(block_id.parent) {
             Err(err) => {
                 let block = convert_to_block(self, input)?;
                 return Err(InsertBlockError::new(block, err.into()).into());
             }
-            Ok(None) => {
+            Ok(false) => {
                 let block = convert_to_block(self, input)?;
 
                 // we don't have the state required to execute this block, buffering it and find the
@@ -2818,7 +2781,7 @@ where
                     missing_ancestor,
                 }))
             }
-            Ok(Some(_)) => {}
+            Ok(true) => {}
         }
 
         // determine whether we are on a fork chain by comparing the block number with the
@@ -3123,25 +3086,17 @@ where
         Ok(())
     }
 
-    /// Returns a builder for creating state providers for the given hash.
+    /// Method that checks if we have canonical state for the given block hash.
     ///
-    /// This is an optimization for parallel execution contexts where we want to avoid
-    /// creating state providers in the critical path.
-    pub fn state_provider_builder(
-        &self,
-        hash: B256,
-    ) -> ProviderResult<Option<StateProviderBuilder<N, P>>>
+    /// Returns whether the canonical state was found.
+    pub fn find_canonical_state_for(&self, hash: B256) -> ProviderResult<bool>
     where
         P: BlockReader + StateProviderFactory + StateReader + Clone,
     {
-        if let Some((historical, blocks)) = self.state.tree_state.blocks_by_hash(hash) {
+        if let Some((historical, _)) = self.state.tree_state.blocks_by_hash(hash) {
             debug!(target: "engine::tree", %hash, %historical, "found canonical state for block in memory, creating provider builder");
             // the block leads back to the canonical chain
-            return Ok(Some(StateProviderBuilder::new(
-                self.provider.clone(),
-                historical,
-                Some(blocks),
-            )))
+            return Ok(true)
         }
 
         // Check if the block is persisted
@@ -3149,11 +3104,11 @@ where
             debug!(target: "engine::tree", %hash, number = %header.number(), "found canonical state for block in database, creating provider builder");
             // For persisted blocks, we create a builder that will fetch state directly from the
             // database
-            return Ok(Some(StateProviderBuilder::new(self.provider.clone(), hash, None)))
+            return Ok(true);
         }
 
         debug!(target: "engine::tree", %hash, "no canonical state found for block");
-        Ok(None)
+        Ok(false)
     }
 }
 

@@ -8,7 +8,7 @@ use crate::tree::{
         sparse_trie::StateRootComputeOutcome,
     },
     sparse_trie::SparseTrieCacheTask,
-    CacheWaitDurations, StateProviderBuilder, TreeConfig, WaitForCaches,
+    CacheWaitDurations, TreeConfig, WaitForCaches,
 };
 use alloy_eip7928::BlockAccessList;
 use alloy_eips::{eip1898::BlockWithParent, eip4895::Withdrawal};
@@ -256,7 +256,7 @@ where
         &mut self,
         env: ExecutionEnv<Evm>,
         transactions: I,
-        provider_builder: StateProviderBuilder<N, P>,
+        provider_builder: P,
         multiproof_provider_factory: F,
         config: &TreeConfig,
         bal: Option<Arc<BlockAccessList>>,
@@ -300,7 +300,7 @@ where
         &self,
         env: ExecutionEnv<Evm>,
         transactions: I,
-        provider_builder: StateProviderBuilder<N, P>,
+        provider: P,
         bal: Option<Arc<BlockAccessList>>,
     ) -> IteratorPayloadHandle<Evm, I, N>
     where
@@ -308,7 +308,7 @@ where
     {
         let (prewarm_rx, execution_rx) =
             self.spawn_tx_iterator(transactions, env.transaction_count);
-        let prewarm_handle = self.spawn_caching_with(env, prewarm_rx, provider_builder, None, bal);
+        let prewarm_handle = self.spawn_caching_with(env, prewarm_rx, provider, None, bal);
         PayloadHandle {
             state_root_handle: None,
             prewarm_handle,
@@ -468,7 +468,7 @@ where
         &self,
         env: ExecutionEnv<Evm>,
         transactions: mpsc::Receiver<(usize, impl ExecutableTxFor<Evm> + Clone + Send + 'static)>,
-        provider_builder: StateProviderBuilder<N, P>,
+        provider: P,
         to_multi_proof: Option<CrossbeamSender<MultiProofMessage>>,
         bal: Option<Arc<BlockAccessList>>,
     ) -> CacheTaskHandle<N::Receipt>
@@ -487,7 +487,7 @@ where
             env,
             evm_config: self.evm_config.clone(),
             saved_cache: saved_cache.clone(),
-            provider: provider_builder,
+            provider,
             metrics: PrewarmMetrics::default(),
             terminate_execution: Arc::new(AtomicBool::new(false)),
             executed_tx_index: Arc::clone(&executed_tx_index),
@@ -1154,7 +1154,7 @@ mod tests {
         cached_state::{CachedStateMetrics, ExecutionCache, SavedCache},
         payload_processor::{evm_state_to_hashed_post_state, ExecutionEnv, PayloadProcessor},
         precompile_cache::PrecompileCacheMap,
-        StateProviderBuilder, TreeConfig,
+        TreeConfig,
     };
     use alloy_eips::eip1898::{BlockNumHash, BlockWithParent};
     use alloy_evm::block::StateChangeSource;
@@ -1378,7 +1378,6 @@ mod tests {
         reth_tracing::init_test_tracing();
 
         let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
-        let genesis_hash = init_genesis(&factory).unwrap();
 
         let state_updates = create_mock_state_updates(10, 10);
         let mut hashed_state = HashedPostState::default();
@@ -1440,7 +1439,7 @@ mod tests {
                 Vec::<Result<Recovered<TransactionSigned>, core::convert::Infallible>>::new(),
                 std::convert::identity,
             ),
-            StateProviderBuilder::new(provider_factory.clone(), genesis_hash, None),
+            provider_factory.clone(),
             OverlayStateProviderFactory::new(provider_factory, ChangesetCache::new()),
             &TreeConfig::default(),
             None, // No BAL for test
