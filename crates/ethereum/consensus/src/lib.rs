@@ -48,6 +48,9 @@ pub struct EthBeaconConsensus<ChainSpec> {
     /// When true, skips the blob gas used check (for big-block testing where merged blocks
     /// exceed single-block blob limits).
     skip_blob_gas_used_check: bool,
+    /// When true, skips the requests hash validation in post-execution (for big-block testing
+    /// where merged blocks produce different execution requests than the original blocks).
+    skip_requests_hash_check: bool,
 }
 
 impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBeaconConsensus<ChainSpec> {
@@ -58,6 +61,7 @@ impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBeaconConsensus<ChainSpec> 
             max_extra_data_size: MAXIMUM_EXTRA_DATA_SIZE,
             skip_gas_limit_ramp_check: false,
             skip_blob_gas_used_check: false,
+            skip_requests_hash_check: false,
         }
     }
 
@@ -84,6 +88,12 @@ impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBeaconConsensus<ChainSpec> 
         self
     }
 
+    /// Disables the requests hash validation in post-execution for big-block testing.
+    pub const fn with_skip_requests_hash_check(mut self, skip: bool) -> Self {
+        self.skip_requests_hash_check = skip;
+        self
+    }
+
     /// Returns the chain spec associated with this consensus engine.
     pub const fn chain_spec(&self) -> &Arc<ChainSpec> {
         &self.chain_spec
@@ -101,13 +111,21 @@ where
         result: &BlockExecutionResult<N::Receipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
     ) -> Result<(), ConsensusError> {
-        validate_block_post_execution(
+        let res = validate_block_post_execution(
             block,
             &self.chain_spec,
             &result.receipts,
             &result.requests,
             receipt_root_bloom,
-        )
+        );
+
+        if self.skip_requests_hash_check {
+            if let Err(ConsensusError::BodyRequestsHashDiff(_)) = &res {
+                return Ok(());
+            }
+        }
+
+        res
     }
 }
 
