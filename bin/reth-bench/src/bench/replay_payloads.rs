@@ -302,6 +302,10 @@ impl Command {
                 tracing::warn!(target: "reth-bench", %err, block_number, "Failed to scrape metrics");
             }
 
+            if let Some(wait_time) = self.wait_time {
+                tokio::time::sleep(wait_time).await;
+            }
+
             let gas_row =
                 TotalGasRow { block_number, transaction_count, gas_used, time: current_duration };
             results.push((gas_row, combined_result));
