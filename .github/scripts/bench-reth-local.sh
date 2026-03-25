@@ -151,13 +151,17 @@ BENCH_WORK_DIR="$(cd "$BENCH_WORK_DIR" && pwd)"
 # ── Global cleanup trap (restores system tuning on any exit) ─────────
 TUNING_APPLIED=false
 CSTATE_PID=
+CSTATE_PGID=
 METRICS_PROXY_PID=
 cleanup_global() {
   [ -n "$METRICS_PROXY_PID" ] && kill "$METRICS_PROXY_PID" 2>/dev/null || true
   if [ "$TUNING_APPLIED" = true ]; then
     echo
     echo "▸ Restoring system settings..."
-    [ -n "$CSTATE_PID" ] && kill "$CSTATE_PID" 2>/dev/null || true
+    # Kill the C-state keeper's process group. Prefer the captured PGID
+    # (the actual setsid session leader); fall back to CSTATE_PID.
+    local pgid="${CSTATE_PGID:-$CSTATE_PID}"
+    [ -n "$pgid" ] && sudo kill -- -"$pgid" 2>/dev/null || true
     sudo systemctl start irqbalance cron atd 2>/dev/null || true
     echo "  System settings restored."
   fi
@@ -241,13 +245,15 @@ echo
 # ── Step 3: Check / download snapshot ────────────────────────────────
 echo "▸ Checking snapshot..."
 cd "$RETH_REPO"
-SNAPSHOT_NEEDED=false
-if ! "${SCRIPTS_DIR}/bench-reth-snapshot.sh" --check; then
-  SNAPSHOT_NEEDED=true
-  echo "  Snapshot needs update."
-else
-  echo "  Snapshot is up-to-date."
-fi
+set +e
+"${SCRIPTS_DIR}/bench-reth-snapshot.sh" --check
+_snap_rc=$?
+set -e
+case "$_snap_rc" in
+  0)  SNAPSHOT_NEEDED=false; echo "  Snapshot is up-to-date." ;;
+  10) SNAPSHOT_NEEDED=true;  echo "  Snapshot needs update." ;;
+  *)  echo "Error: snapshot check failed (exit $_snap_rc)"; exit "$_snap_rc" ;;
+esac
 echo
 
 # ── Step 4: Build binaries (+ snapshot download) in parallel ─────────
@@ -262,23 +268,24 @@ PID_BASELINE=$!
 "${SCRIPTS_DIR}/bench-reth-build.sh" feature "$FEATURE_SRC" "$FEATURE_SHA" &
 PID_FEATURE=$!
 
-PID_SNAPSHOT=
-if [ "$SNAPSHOT_NEEDED" = "true" ]; then
-  echo "  Also downloading snapshot in parallel..."
-  "${SCRIPTS_DIR}/bench-reth-snapshot.sh" &
-  PID_SNAPSHOT=$!
-fi
-
 wait $PID_BASELINE || FAIL=1
 wait $PID_FEATURE  || FAIL=1
-[ -n "$PID_SNAPSHOT" ] && { wait $PID_SNAPSHOT || FAIL=1; }
 
 if [ $FAIL -ne 0 ]; then
-  echo "Error: one or more parallel tasks failed (builds / snapshot)"
+  echo "Error: one or more builds failed"
   exit 1
 fi
 echo "  Binaries built successfully."
 echo
+
+# Download snapshot after builds so that BENCH_RETH_BINARY is available
+# (the snapshot script uses reth to download/extract the snapshot).
+if [ "$SNAPSHOT_NEEDED" = "true" ]; then
+  echo "▸ Downloading snapshot..."
+  export BENCH_RETH_BINARY="${FEATURE_SRC}/target/profiling/reth"
+  "${SCRIPTS_DIR}/bench-reth-snapshot.sh"
+  echo
+fi
 
 # ── Step 5: System tuning (optional) ────────────────────────────────
 if [ "$TUNE" = "true" ]; then
@@ -313,9 +320,16 @@ if [ "$TUNE" = "true" ]; then
     fi
   done
 
-  # Prevent deep C-states
-  sudo sh -c 'exec 3<>/dev/cpu_dma_latency; echo -ne "\x00\x00\x00\x00" >&3; sleep infinity' &
+  # Prevent deep C-states by holding /dev/cpu_dma_latency open at 0.
+  # Uses setsid so all processes share a new session/PGID. We capture
+  # the actual PGID from inside the root shell so cleanup can reliably
+  # kill the entire group regardless of sudo's process model.
+  CSTATE_PGID_FILE="$(mktemp)"
+  sudo setsid bash -c "echo \$\$ > '$CSTATE_PGID_FILE'; exec 3<>/dev/cpu_dma_latency; printf '\\x00\\x00\\x00\\x00' >&3; exec sleep infinity" &
   CSTATE_PID=$!
+  for _ in $(seq 1 20); do [ -s "$CSTATE_PGID_FILE" ] && break; sleep 0.1; done
+  CSTATE_PGID="$(cat "$CSTATE_PGID_FILE" 2>/dev/null || true)"
+  rm -f "$CSTATE_PGID_FILE"
 
   # Pin IRQs to core 0
   for irq in /proc/irq/*/smp_affinity_list; do
