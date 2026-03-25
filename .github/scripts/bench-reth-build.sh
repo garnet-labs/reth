@@ -127,7 +127,7 @@ case "$MODE" in
       if [ -d "bin/reth-bb" ]; then
         echo "Building reth-bb..."
         RUSTFLAGS="-C target-cpu=native${EXTRA_RUSTFLAGS}" \
-          cargo build --profile profiling --bin reth-bb
+          cargo build --profile profiling -p reth-bb
       fi
       make install-reth-bench
       $MC cp target/profiling/reth "${BUCKET}/reth"
