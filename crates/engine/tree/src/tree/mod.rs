@@ -257,14 +257,8 @@ pub enum TreeAction {
 }
 
 #[derive(Debug)]
-struct QueuedBeaconMessage<T: PayloadTypes> {
-    enqueued_at: Instant,
-    message: BeaconEngineMessage<T>,
-}
-
-#[derive(Debug)]
-enum BufferedEngineMessage<T: PayloadTypes, N: NodePrimitives> {
-    Beacon(QueuedBeaconMessage<T>),
+enum StashedEngineMessage<T: PayloadTypes, N: NodePrimitives> {
+    Beacon { stashed_at: Instant, message: BeaconEngineMessage<T> },
     Other(FromEngine<EngineApiRequest<T, N>, N::Block>),
 }
 
@@ -294,8 +288,8 @@ where
     incoming_tx: Sender<FromEngine<EngineApiRequest<T, N>, N::Block>>,
     /// Incoming engine API requests.
     incoming: Receiver<FromEngine<EngineApiRequest<T, N>, N::Block>>,
-    /// Buffered engine messages waiting to be processed once persistence catches up.
-    buffered_engine_messages: VecDeque<BufferedEngineMessage<T, N>>,
+    /// Stashed engine messages waiting to be processed once persistence catches up.
+    stashed_engine_messages: VecDeque<StashedEngineMessage<T, N>>,
     /// Outgoing events that are emitted to the handler.
     outgoing: UnboundedSender<EngineApiEvent<N>>,
     /// Channels to the persistence layer.
@@ -341,7 +335,7 @@ where
             .field("payload_validator", &self.payload_validator)
             .field("state", &self.state)
             .field("incoming_tx", &self.incoming_tx)
-            .field("buffered_engine_messages", &self.buffered_engine_messages.len())
+            .field("stashed_engine_messages", &self.stashed_engine_messages.len())
             .field("persistence", &self.persistence)
             .field("persistence_state", &self.persistence_state)
             .field("backfill_sync_state", &self.backfill_sync_state)
@@ -402,7 +396,7 @@ where
             consensus,
             payload_validator,
             incoming,
-            buffered_engine_messages: VecDeque::new(),
+            stashed_engine_messages: VecDeque::new(),
             outgoing,
             persistence,
             persistence_state,
@@ -494,25 +488,49 @@ where
         self.incoming_tx.clone()
     }
 
-    fn update_backpressure_buffer_len_metric(&self) {
-        self.metrics.engine.backpressure_buffer_len.set(self.buffered_engine_messages.len() as f64);
+    fn update_backpressure_stash_len_metric(&self) {
+        self.metrics.engine.backpressure_buffer_len.set(self.stashed_engine_messages.len() as f64);
     }
 
-    fn enqueue_beacon_message(&mut self, message: BeaconEngineMessage<T>) {
-        self.buffered_engine_messages.push_back(BufferedEngineMessage::Beacon(
-            QueuedBeaconMessage { enqueued_at: Instant::now(), message },
-        ));
-        self.update_backpressure_buffer_len_metric();
+    /// Stashes an incoming engine message without processing it. Called from
+    /// `wait_for_persistence_event` to collect messages that arrive while we are blocked
+    /// waiting for persistence to complete.
+    fn stash_incoming_message(
+        &mut self,
+        message: FromEngine<EngineApiRequest<T, N>, N::Block>,
+    ) -> Result<(), InsertBlockFatalError> {
+        match message {
+            FromEngine::Request(EngineApiRequest::Beacon(request)) => {
+                self.stash_beacon_message(request);
+            }
+            other => self.stash_engine_message(other),
+        }
+
+        Ok(())
     }
 
-    fn enqueue_buffered_engine_message(
+    /// Stashes a beacon message (newPayload / forkchoiceUpdated). Stamps it with `stashed_at`
+    /// so we can measure how long it waited once it is eventually processed.
+    fn stash_beacon_message(&mut self, message: BeaconEngineMessage<T>) {
+        self.stashed_engine_messages.push_back(StashedEngineMessage::Beacon {
+            stashed_at: Instant::now(),
+            message,
+        });
+        self.update_backpressure_stash_len_metric();
+    }
+
+    /// Stashes a non-beacon engine message (e.g. downloaded blocks). These don't carry a
+    /// timestamp because we don't track backpressure wait times for non-beacon messages.
+    fn stash_engine_message(
         &mut self,
         message: FromEngine<EngineApiRequest<T, N>, N::Block>,
     ) {
-        self.buffered_engine_messages.push_back(BufferedEngineMessage::Other(message));
-        self.update_backpressure_buffer_len_metric();
+        self.stashed_engine_messages.push_back(StashedEngineMessage::Other(message));
+        self.update_backpressure_stash_len_metric();
     }
 
+    /// How many blocks the canonical tip is ahead of the last persisted block. A large gap means
+    /// persistence is falling behind execution.
     fn persistence_gap(&self) -> u64 {
         self.state
             .tree_state
@@ -520,27 +538,32 @@ where
             .saturating_sub(self.persistence_state.last_persisted_block.number)
     }
 
+    /// Returns `true` when the main loop should stall processing of stashed beacon messages.
+    ///
+    /// This is the case when there are messages waiting AND the persistence gap has reached the
+    /// configured threshold — meaning we've accumulated enough unpersisted blocks that we need
+    /// to let persistence catch up before executing more.
     fn should_backpressure(&self) -> bool {
-        !self.buffered_engine_messages.is_empty()
+        !self.stashed_engine_messages.is_empty()
             && self.persistence_gap() >= self.config.persistence_backpressure_threshold()
     }
 
-    fn try_process_buffered_engine_message(
+    fn try_process_stashed_engine_message(
         &mut self,
     ) -> Result<Option<ops::ControlFlow<()>>, InsertBlockFatalError> {
         if self.should_backpressure() {
             return Ok(None);
         }
 
-        let Some(queued) = self.buffered_engine_messages.pop_front() else {
+        let Some(queued) = self.stashed_engine_messages.pop_front() else {
             return Ok(None);
         };
-        self.update_backpressure_buffer_len_metric();
+        self.update_backpressure_stash_len_metric();
 
         match queued {
-            BufferedEngineMessage::Beacon(queued) => {
-                let wait = queued.enqueued_at.elapsed();
-                match &queued.message {
+            StashedEngineMessage::Beacon { stashed_at, message } => {
+                let wait = stashed_at.elapsed();
+                match &message {
                     BeaconEngineMessage::NewPayload { .. } |
                     BeaconEngineMessage::RethNewPayload { .. } => {
                         self.metrics.engine.new_payload_backpressure_wait_seconds.record(wait);
@@ -550,24 +573,10 @@ where
                     }
                 }
 
-                self.process_beacon_message(queued.message, Some(wait)).map(Some)
+                self.process_beacon_message(message, Some(wait)).map(Some)
             }
-            BufferedEngineMessage::Other(message) => self.on_engine_message(message).map(Some),
+            StashedEngineMessage::Other(message) => self.on_engine_message(message).map(Some),
         }
-    }
-
-    fn handle_backpressure_message(
-        &mut self,
-        message: FromEngine<EngineApiRequest<T, N>, N::Block>,
-    ) -> Result<(), InsertBlockFatalError> {
-        match message {
-            FromEngine::Request(EngineApiRequest::Beacon(request)) => {
-                self.enqueue_beacon_message(request);
-            }
-            other => self.enqueue_buffered_engine_message(other),
-        }
-
-        Ok(())
     }
 
     /// Run the engine API handler.
@@ -575,6 +584,30 @@ where
     /// This will block the current thread and process incoming messages.
     pub fn run(mut self) {
         loop {
+            // Persistence backpressure: beacon messages (newPayload, forkchoiceUpdated) are
+            // not processed inline - they are always pushed into `stashed_engine_messages`
+            // first (see `on_engine_message`). Before we block-wait for new events, we try to
+            // make progress on two fronts:
+            //
+            //  1. Poll for persistence completion (non-blocking). If a background flush
+            //     finished, handle it and restart the loop - this shrinks the gap between
+            //     the canonical tip and the last persisted block.
+            //
+            //  2. Try to drain one stashed message. This only succeeds when the persistence
+            //     gap is below `persistence_backpressure_threshold`; otherwise the stash
+            //     stays blocked and we skip to the wait below.
+            //
+            // If both checks fall through without doing work, we need to wait for an external
+            // event. The wait strategy depends on whether we are backpressured:
+            //
+            //  - Backpressured (gap >= threshold, stash non-empty): we call
+            //    `wait_for_persistence_event` which blocks until persistence completes. Any
+            //    incoming messages that arrive in the meantime are stashed, not processed.
+            //    This is what creates the actual back-pressure — the CL's requests sit in the
+            //    stash and their response channels stay open until we catch up.
+            //
+            //  - Normal: we call `wait_for_event` which accepts whichever channel fires
+            //    first — persistence completion or incoming message.
             match self.try_poll_persistence_completion() {
                 Ok(true) => {
                     if let Err(err) = self.advance_persistence() {
@@ -590,7 +623,7 @@ where
                 }
             }
 
-            match self.try_process_buffered_engine_message() {
+            match self.try_process_stashed_engine_message() {
                 Ok(Some(ops::ControlFlow::Break(()))) => return,
                 Ok(Some(ops::ControlFlow::Continue(()))) => {
                     if let Err(err) = self.advance_persistence() {
@@ -611,7 +644,7 @@ where
                     error!(target: "engine::tree", %err, "Advancing persistence failed");
                     return
                 }
-                match self.wait_for_backpressure_event() {
+                match self.wait_for_persistence_event() {
                     Ok(event) => event,
                     Err(fatal) => {
                         error!(target: "engine::tree", %fatal, "insert block fatal error");
@@ -657,7 +690,15 @@ where
         }
     }
 
-    fn wait_for_backpressure_event(&mut self) -> Result<LoopEvent<T, N>, InsertBlockFatalError> {
+    /// Blocks until a persistence task completes, used when we are under backpressure.
+    ///
+    /// While waiting, incoming messages continue to be read from the channel (so senders don't
+    /// block) but they are stashed rather than processed. The only event that can break out of
+    /// this wait is persistence completion — that's what makes it "backpressure": we refuse to
+    /// do new work until persistence catches up.
+    ///
+    /// Falls back to the normal `wait_for_event` if no persistence task is in flight.
+    fn wait_for_persistence_event(&mut self) -> Result<LoopEvent<T, N>, InsertBlockFatalError> {
         let maybe_persistence = self.persistence_state.rx.take();
 
         if let Some((persistence_rx, start_time, _action)) = maybe_persistence {
@@ -671,7 +712,7 @@ where
                     }
                     recv(self.incoming) -> msg => {
                         match msg {
-                            Ok(message) => self.handle_backpressure_message(message)?,
+                            Ok(message) => self.stash_incoming_message(message)?,
                             Err(_) => return Ok(LoopEvent::Disconnected),
                         }
                     }
@@ -1653,7 +1694,7 @@ where
                         ));
                     }
                     EngineApiRequest::Beacon(request) => {
-                        self.enqueue_beacon_message(request);
+                        self.stash_beacon_message(request);
                     }
                 }
             }
