@@ -40,7 +40,7 @@ use reth_storage_api::{BlockReader, HeaderProvider};
 use revm::context::Block;
 use revm_primitives::map::DefaultHashBuilder;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Testing API handler.
 #[derive(Debug, Clone)]
@@ -132,6 +132,8 @@ where
 
                 let mut invalid_senders: HashSet<Address, DefaultHashBuilder> = HashSet::default();
                 let mut block_transactions_rlp_length = 0usize;
+                let mut skipped_count = 0usize;
+                let mut skipped_sender_count = 0usize;
 
                 // Decode and recover all transactions in parallel
                 let recovered_txs = try_recover_signers(&request.transactions, |tx| {
@@ -140,9 +142,12 @@ where
                 })
                 .or(Err(EthApiError::InvalidTransactionSignature))?;
 
+                let total_submitted = recovered_txs.len();
+
                 for (idx, tx) in recovered_txs.into_iter().enumerate() {
                     let signer = tx.signer();
                     if skip_invalid_transactions && invalid_senders.contains(&signer) {
+                        skipped_sender_count += 1;
                         continue;
                     }
 
@@ -156,7 +161,7 @@ where
                             1024;
                         if estimated_block_size > MAX_RLP_BLOCK_SIZE {
                             if skip_invalid_transactions {
-                                debug!(
+                                warn!(
                                     target: "rpc::testing",
                                     tx_idx = idx,
                                     ?signer,
@@ -165,6 +170,7 @@ where
                                     "Skipping transaction: would exceed block size limit"
                                 );
                                 invalid_senders.insert(signer);
+                                skipped_count += 1;
                                 continue;
                             }
                             return Err(Eth::Error::from_eth_err(EthApiError::InvalidParams(
@@ -181,14 +187,15 @@ where
                         Ok(gas_used) => gas_used,
                         Err(err) => {
                             if skip_invalid_transactions {
-                                debug!(
+                                warn!(
                                     target: "rpc::testing",
                                     tx_idx = idx,
                                     ?signer,
-                                    error = ?err,
+                                    %err,
                                     "Skipping invalid transaction"
                                 );
                                 invalid_senders.insert(signer);
+                                skipped_count += 1;
                                 continue;
                             }
                             debug!(
@@ -204,6 +211,17 @@ where
 
                     block_transactions_rlp_length += tx_rlp_len;
                     total_fees += U256::from(tip) * U256::from(gas_used);
+                }
+
+                if skipped_count > 0 || skipped_sender_count > 0 {
+                    warn!(
+                        target: "rpc::testing",
+                        total_submitted,
+                        skipped_invalid = skipped_count,
+                        skipped_same_sender = skipped_sender_count,
+                        invalid_senders = invalid_senders.len(),
+                        "Block built with skipped transactions"
+                    );
                 }
                 let outcome = builder.finish(&state).map_err(Eth::Error::from_eth_err)?;
 
