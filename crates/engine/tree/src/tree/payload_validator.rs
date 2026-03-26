@@ -1680,9 +1680,16 @@ where
                 block_validation_metrics
                     .trie_updates_sorted_size
                     .record(computed.trie_updates.total_len() as f64);
+                let trie_data_bytes = computed.trie_updates.data_size();
                 block_validation_metrics
                     .trie_updates_sorted_data_bytes
-                    .record(computed.trie_updates.data_size() as f64);
+                    .record(trie_data_bytes as f64);
+                tracing::info!(
+                    target: "engine::tree",
+                    block_number,
+                    trie_data_bytes,
+                    "trie_updates_data_size"
+                );
                 if let Some(anchored) = &computed.anchored_trie_input {
                     block_validation_metrics
                         .anchored_overlay_trie_updates_size
