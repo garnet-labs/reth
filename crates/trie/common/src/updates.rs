@@ -600,6 +600,34 @@ impl TrieUpdatesSorted {
             self.storage_tries.values().map(|storage| storage.len()).sum::<usize>()
     }
 
+    /// Returns the total serialized byte size of all trie node data (keys + values).
+    ///
+    /// For each node, this accounts for the nibbles key length plus the
+    /// `BranchNodeCompact` value size (3 masks × 2 bytes + hashes × 32 bytes +
+    /// optional root hash 32 bytes). Deleted nodes contribute only their key size.
+    pub fn data_size(&self) -> usize {
+        fn branch_node_size(node: &BranchNodeCompact) -> usize {
+            // 3 × TrieMask (u16) = 6 bytes
+            // + hashes.len() × 32 bytes (B256)
+            // + optional root_hash 32 bytes
+            6 + node.hashes.len() * 32 + node.root_hash.map_or(0, |_| 32)
+        }
+
+        let account_size: usize = self
+            .account_nodes
+            .iter()
+            .map(|(nibbles, maybe_node)| {
+                let key_size = nibbles.len();
+                let value_size = maybe_node.as_ref().map_or(0, branch_node_size);
+                key_size + value_size
+            })
+            .sum();
+
+        let storage_size: usize = self.storage_tries.values().map(|st| st.data_size()).sum();
+
+        account_size + storage_size
+    }
+
     /// Extends the trie updates with another set of sorted updates.
     ///
     /// This merges the account nodes and storage tries from `other` into `self`.
@@ -770,6 +798,20 @@ impl StorageTrieUpdatesSorted {
     /// Returns `true` if there are no storage node updates.
     pub const fn is_empty(&self) -> bool {
         self.storage_nodes.is_empty()
+    }
+
+    /// Returns the total serialized byte size of storage trie node data (keys + values).
+    pub fn data_size(&self) -> usize {
+        self.storage_nodes
+            .iter()
+            .map(|(nibbles, maybe_node)| {
+                let key_size = 32 + nibbles.len(); // hashed_address (B256) + nibbles
+                let value_size = maybe_node.as_ref().map_or(0, |node| {
+                    6 + node.hashes.len() * 32 + node.root_hash.map_or(0, |_| 32)
+                });
+                key_size + value_size
+            })
+            .sum()
     }
 
     /// Extends the storage trie updates with another set of sorted updates.

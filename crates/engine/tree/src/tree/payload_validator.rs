@@ -1680,6 +1680,9 @@ where
                 block_validation_metrics
                     .trie_updates_sorted_size
                     .record(computed.trie_updates.total_len() as f64);
+                block_validation_metrics
+                    .trie_updates_sorted_data_bytes
+                    .record(computed.trie_updates.data_size() as f64);
                 if let Some(anchored) = &computed.anchored_trie_input {
                     block_validation_metrics
                         .anchored_overlay_trie_updates_size

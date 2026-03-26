@@ -681,6 +681,7 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 let merged_trie =
                     TrieUpdatesSorted::merge_batch(blocks.iter().rev().map(|b| b.trie_updates()));
                 if !merged_trie.is_empty() {
+                    timings.trie_updates_data_bytes += merged_trie.data_size();
                     self.write_trie_updates_sorted(&merged_trie)?;
                 }
                 timings.write_trie_updates += start.elapsed();
