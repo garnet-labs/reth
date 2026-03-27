@@ -1912,7 +1912,7 @@ where
         }
 
         let _ = self.outgoing.send(event).inspect_err(
-            |err| error!(target: "engine::tree", "Failed to send internal event: {err:?}"),
+            |err| debug!(target: "engine::tree", "Failed to send internal event: {err:?}"),
         );
     }
 
