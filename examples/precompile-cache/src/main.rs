@@ -4,7 +4,7 @@
 
 use alloy_evm::{
     eth::EthEvmContext,
-    precompiles::{DynPrecompile, Precompile, PrecompileInput, PrecompileResultExtExt, PrecompilesMap},
+    precompiles::{DynPrecompile, Precompile, PrecompileInput, PrecompileResultExt, PrecompilesMap},
     revm::{handler::EthPrecompiles, precompile::PrecompileId},
     Evm, EvmFactory,
 };
