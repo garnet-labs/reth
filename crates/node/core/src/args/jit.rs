@@ -27,6 +27,17 @@ pub struct JitArgs {
     #[arg(long = "jit.max-pending-jobs", default_value_t = Self::DEFAULT_MAX_PENDING_JOBS, help_heading = "JIT")]
     pub max_pending_jobs: usize,
 
+    /// Maximum total resident compiled code size in bytes.
+    /// When exceeded, the backend evicts least-recently-used entries.
+    /// 0 means no limit.
+    #[arg(long = "jit.code-cache-bytes", default_value_t = Self::DEFAULT_CODE_CACHE_BYTES, help_heading = "JIT")]
+    pub code_cache_bytes: usize,
+
+    /// Duration in seconds after which a compiled program with no lookup hits is evicted.
+    /// 0 means idle eviction is disabled.
+    #[arg(long = "jit.idle-evict-secs", default_value_t = Self::DEFAULT_IDLE_EVICT_SECS, help_heading = "JIT")]
+    pub idle_evict_secs: u64,
+
     /// Enable compiler debug dumps. IR, assembly, and bytecode are written to
     /// `<datadir>/jit/<spec_id>/<code_hash>/` for each compiled contract.
     #[arg(long = "jit.debug", default_value_t = false, help_heading = "JIT")]
@@ -42,6 +53,8 @@ impl JitArgs {
     const DEFAULT_HOT_THRESHOLD: u32 = 8;
     const DEFAULT_CHANNEL_CAPACITY: usize = 4096;
     const DEFAULT_MAX_PENDING_JOBS: usize = 2048;
+    const DEFAULT_CODE_CACHE_BYTES: usize = 1024 * 1024 * 1024; // 1 GiB
+    const DEFAULT_IDLE_EVICT_SECS: u64 = 600;
 }
 
 impl Default for JitArgs {
@@ -52,6 +65,8 @@ impl Default for JitArgs {
             worker_count: None,
             channel_capacity: Self::DEFAULT_CHANNEL_CAPACITY,
             max_pending_jobs: Self::DEFAULT_MAX_PENDING_JOBS,
+            code_cache_bytes: Self::DEFAULT_CODE_CACHE_BYTES,
+            idle_evict_secs: Self::DEFAULT_IDLE_EVICT_SECS,
             debug: false,
             blocking: false,
         }

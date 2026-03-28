@@ -55,7 +55,11 @@ use reth_transaction_pool::{
     TransactionPool, TransactionValidationTaskExecutor,
 };
 use revm::context::TxEnv;
-use std::{marker::PhantomData, sync::Arc, time::SystemTime};
+use std::{
+    marker::PhantomData,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -444,8 +448,11 @@ where
             jit_hot_threshold: jit.hot_threshold,
             lookup_event_channel_capacity: jit.channel_capacity,
             max_pending_jit_jobs: jit.max_pending_jobs,
+
             jit_worker_count: jit.worker_count.unwrap_or(default_tuning.jit_worker_count),
-            resident_code_cache_bytes: 1024 * 1024 * 1024, // 1 GiB
+            resident_code_cache_bytes: jit.code_cache_bytes,
+            idle_evict_duration: (jit.idle_evict_secs > 0)
+                .then(|| Duration::from_secs(jit.idle_evict_secs)),
             ..default_tuning
         };
 
