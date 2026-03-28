@@ -1321,9 +1321,7 @@
   ],
   "refresh": "",
   "schemaVersion": 40,
-  "tags": [
-    "reth"
-  ],
+  "tags": [],
   "templating": {
     "list": [
       {
