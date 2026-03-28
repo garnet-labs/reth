@@ -48,7 +48,6 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": null,
   "links": [],
   "panels": [
     {
@@ -1321,7 +1320,9 @@
   ],
   "refresh": "",
   "schemaVersion": 40,
-  "tags": [],
+  "tags": [
+    "reth"
+  ],
   "templating": {
     "list": [
       {
@@ -1403,7 +1404,5 @@
   "timepicker": {},
   "timezone": "browser",
   "title": "Reth - Persistence",
-  "uid": "df9ob3njh2dxcd",
-  "version": 4,
   "weekStart": ""
 }
