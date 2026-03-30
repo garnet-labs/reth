@@ -75,6 +75,7 @@ reth-testing-utils.workspace = true
 reth-ethereum-engine-primitives.workspace = true
 reth-ethereum-primitives.workspace = true
 reth-tracing.workspace = true
+criterion.workspace = true
 
 revm-database-interface.workspace = true
 revm-state.workspace = true
@@ -105,3 +106,8 @@ test-utils = [
     "tokio",
     "reth-tasks/test-utils",
 ]
+
+[[bench]]
+name = "save_blocks"
+required-features = ["test-utils"]
+harness = false

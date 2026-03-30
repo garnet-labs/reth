@@ -600,6 +600,12 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
             // MDBX writes
             let mdbx_start = Instant::now();
 
+            let state_write_config = StateWriteConfig {
+                write_receipts: !sf_ctx.write_receipts,
+                write_account_changesets: !sf_ctx.write_account_changesets,
+                write_storage_changesets: !sf_ctx.write_storage_changesets,
+            };
+
             // Collect all transaction hashes across all blocks, sort them, and write in batch
             if !self.cached_storage_settings().storage_v2 &&
                 self.prune_modes.transaction_lookup.is_none_or(|m| !m.is_full())
@@ -634,33 +640,71 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
                 );
             }
 
-            for (i, block) in blocks.iter().enumerate() {
-                let recovered_block = block.recovered_block();
+            if blocks.len() == 1 {
+                let recovered_block = blocks[0].recovered_block();
 
                 let start = Instant::now();
-                self.insert_block_mdbx_only(recovered_block, tx_nums[i])?;
-                timings.insert_block += start.elapsed();
+                self.insert_block_mdbx_only(recovered_block, tx_nums[0])?;
+                timings.insert_block = start.elapsed();
 
                 if save_mode.with_state() {
-                    let execution_output = block.execution_outcome();
-
-                    // Write state and changesets to the database.
-                    // Must be written after blocks because of the receipt lookup.
-                    // Skip receipts/account changesets if they're being written to static files.
                     let start = Instant::now();
                     self.write_state(
                         WriteStateInput::Single {
-                            outcome: execution_output,
+                            outcome: blocks[0].execution_outcome(),
                             block: recovered_block.number(),
                         },
                         OriginalValuesKnown::No,
-                        StateWriteConfig {
-                            write_receipts: !sf_ctx.write_receipts,
-                            write_account_changesets: !sf_ctx.write_account_changesets,
-                            write_storage_changesets: !sf_ctx.write_storage_changesets,
-                        },
+                        state_write_config,
                     )?;
-                    timings.write_state += start.elapsed();
+                    timings.write_state = start.elapsed();
+                }
+            } else {
+                let start = Instant::now();
+                self.insert_blocks_mdbx_only(&blocks, &tx_nums)?;
+                timings.insert_block = start.elapsed();
+
+                if save_mode.with_state() {
+                    let start = Instant::now();
+                    let should_batch_state = !self.cached_storage_settings().use_hashed_state() ||
+                        state_write_config.write_receipts ||
+                        state_write_config.write_account_changesets ||
+                        state_write_config.write_storage_changesets;
+
+                    if should_batch_state {
+                        let mut blocks_iter = blocks.iter();
+                        let first_block = blocks_iter.next().expect("checked non-empty above");
+                        let mut execution_outcome = ExecutionOutcome::from((
+                            first_block.execution_outcome().clone(),
+                            first_block.block_number(),
+                        ));
+
+                        for block in blocks_iter {
+                            execution_outcome.extend(ExecutionOutcome::from((
+                                block.execution_outcome().clone(),
+                                block.block_number(),
+                            )));
+                        }
+
+                        self.write_state(
+                            &execution_outcome,
+                            OriginalValuesKnown::No,
+                            state_write_config,
+                        )?;
+                    } else {
+                        for block in &blocks {
+                            self.write_state(
+                                WriteStateInput::Single {
+                                    outcome: block.execution_outcome(),
+                                    block: block.block_number(),
+                                },
+                                OriginalValuesKnown::No,
+                                state_write_config,
+                            )?;
+                        }
+                    }
+
+                    timings.write_state = start.elapsed();
                 }
             }
 
@@ -754,6 +798,78 @@ impl<TX: DbTx + DbTxMut + 'static, N: NodeTypesForProvider> DatabaseProvider<TX,
         self.write_block_body_indices(block_number, block.body(), first_tx_num, tx_count)?;
 
         Ok(StoredBlockBodyIndices { first_tx_num, tx_count })
+    }
+
+    #[instrument(level = "debug", target = "providers::db", skip_all, fields(block_count = blocks.len()))]
+    fn insert_blocks_mdbx_only(
+        &self,
+        blocks: &[ExecutedBlock<N::Primitives>],
+        tx_nums: &[TxNumber],
+    ) -> ProviderResult<()> {
+        if blocks.is_empty() {
+            return Ok(())
+        }
+
+        debug_assert_eq!(blocks.len(), tx_nums.len());
+
+        if self.prune_modes.sender_recovery.is_none_or(|m| !m.is_full()) &&
+            EitherWriterDestination::senders(self).is_database()
+        {
+            let start = Instant::now();
+            let mut cursor = self.tx.cursor_write::<tables::TransactionSenders>()?;
+            for (block, first_tx_num) in blocks.iter().zip(tx_nums.iter().copied()) {
+                for (tx_num, sender) in
+                    (first_tx_num..).zip(block.recovered_block().senders_iter().copied())
+                {
+                    cursor.append(tx_num, &sender)?;
+                }
+            }
+            self.metrics
+                .record_duration(metrics::Action::InsertTransactionSenders, start.elapsed());
+        }
+
+        let start = Instant::now();
+        let mut header_numbers = blocks
+            .iter()
+            .map(|block| (block.recovered_block().hash(), block.block_number()))
+            .collect::<Vec<_>>();
+        header_numbers.sort_unstable_by_key(|(hash, _)| *hash);
+
+        let mut header_numbers_cursor = self.tx.cursor_write::<tables::HeaderNumbers>()?;
+        for (hash, block_number) in header_numbers {
+            header_numbers_cursor.upsert(hash, &block_number)?;
+        }
+        self.metrics.record_duration(metrics::Action::InsertHeaderNumbers, start.elapsed());
+
+        let mut bodies = Vec::with_capacity(blocks.len());
+        let mut block_indices_cursor = self.tx.cursor_write::<tables::BlockBodyIndices>()?;
+        let mut tx_block_cursor = self.tx.cursor_write::<tables::TransactionBlocks>()?;
+        let mut durations_recorder = metrics::DurationsRecorder::new(&self.metrics);
+        let mut wrote_tx_blocks = false;
+
+        for (block, first_tx_num) in blocks.iter().zip(tx_nums.iter().copied()) {
+            let recovered_block = block.recovered_block();
+            let block_number = recovered_block.number();
+            let tx_count = recovered_block.body().transaction_count() as u64;
+            let stored_body_indices = StoredBlockBodyIndices { first_tx_num, tx_count };
+
+            block_indices_cursor.append(block_number, &stored_body_indices)?;
+            if tx_count > 0 {
+                tx_block_cursor.append(stored_body_indices.last_tx_num(), &block_number)?;
+                wrote_tx_blocks = true;
+            }
+
+            bodies.push((block_number, Some(recovered_block.body())));
+        }
+
+        durations_recorder.record_relative(metrics::Action::InsertBlockBodyIndices);
+        if wrote_tx_blocks {
+            durations_recorder.record_relative(metrics::Action::InsertTransactionBlocks);
+        }
+
+        self.storage.writer().write_block_bodies(self, bodies)?;
+
+        Ok(())
     }
 
     /// Writes MDBX block body indices (`BlockBodyIndices`, `TransactionBlocks`,
