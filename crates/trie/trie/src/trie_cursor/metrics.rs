@@ -64,7 +64,7 @@ impl TrieCursorMetrics {
         self.next_histogram.record(cache.next_count as f64);
         self.seek_histogram.record(cache.seek_count as f64);
         self.seek_exact_histogram.record(cache.seek_exact_count as f64);
-        if cache.timed_operations > 0 {
+        if !cache.total_duration.is_zero() {
             self.overall_duration.record(cache.total_duration.as_secs_f64());
         }
         cache.reset();
@@ -82,19 +82,11 @@ pub struct TrieCursorMetricsCache {
     pub seek_exact_count: usize,
     /// Total duration spent in database operations
     pub total_duration: Duration,
-    /// Number of operations that recorded duration samples
-    pub timed_operations: usize,
 }
 
 impl Default for TrieCursorMetricsCache {
     fn default() -> Self {
-        Self {
-            next_count: 0,
-            seek_count: 0,
-            seek_exact_count: 0,
-            total_duration: Duration::ZERO,
-            timed_operations: 0,
-        }
+        Self { next_count: 0, seek_count: 0, seek_exact_count: 0, total_duration: Duration::ZERO }
     }
 }
 
@@ -105,7 +97,6 @@ impl TrieCursorMetricsCache {
         self.seek_count = 0;
         self.seek_exact_count = 0;
         self.total_duration = Duration::ZERO;
-        self.timed_operations = 0;
     }
 
     /// Extend this cache by adding the counts from another cache.
@@ -116,7 +107,6 @@ impl TrieCursorMetricsCache {
         self.seek_count += other.seek_count;
         self.seek_exact_count += other.seek_exact_count;
         self.total_duration += other.total_duration;
-        self.timed_operations += other.timed_operations;
     }
 
     /// Record the span for metrics.
@@ -129,7 +119,6 @@ impl TrieCursorMetricsCache {
             seek_count = self.seek_count,
             seek_exact_count = self.seek_exact_count,
             total_duration = self.total_duration.as_secs_f64(),
-            timed_operations = self.timed_operations,
         )
         .entered();
     }
@@ -147,19 +136,12 @@ pub struct InstrumentedTrieCursor<'metrics, C> {
     cursor: C,
     /// Cached metrics counters
     metrics: &'metrics mut TrieCursorMetricsCache,
-    /// Whether every operation should record elapsed time
-    measure_duration: bool,
 }
 
 impl<'metrics, C> InstrumentedTrieCursor<'metrics, C> {
     /// Create a new metrics cursor wrapping the given cursor.
     pub const fn new(cursor: C, metrics: &'metrics mut TrieCursorMetricsCache) -> Self {
-        Self { cursor, metrics, measure_duration: true }
-    }
-
-    /// Create a cursor wrapper that only tracks operation counts.
-    pub const fn count_only(cursor: C, metrics: &'metrics mut TrieCursorMetricsCache) -> Self {
-        Self { cursor, metrics, measure_duration: false }
+        Self { cursor, metrics }
     }
 }
 
@@ -168,13 +150,10 @@ impl<'metrics, C: TrieCursor> TrieCursor for InstrumentedTrieCursor<'metrics, C>
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        let start = self.measure_duration.then(Instant::now);
+        let start = Instant::now();
         self.metrics.seek_exact_count += 1;
         let result = self.cursor.seek_exact(key);
-        if let Some(start) = start {
-            self.metrics.total_duration += start.elapsed();
-            self.metrics.timed_operations += 1;
-        }
+        self.metrics.total_duration += start.elapsed();
         result
     }
 
@@ -182,24 +161,18 @@ impl<'metrics, C: TrieCursor> TrieCursor for InstrumentedTrieCursor<'metrics, C>
         &mut self,
         key: Nibbles,
     ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        let start = self.measure_duration.then(Instant::now);
+        let start = Instant::now();
         self.metrics.seek_count += 1;
         let result = self.cursor.seek(key);
-        if let Some(start) = start {
-            self.metrics.total_duration += start.elapsed();
-            self.metrics.timed_operations += 1;
-        }
+        self.metrics.total_duration += start.elapsed();
         result
     }
 
     fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
-        let start = self.measure_duration.then(Instant::now);
+        let start = Instant::now();
         self.metrics.next_count += 1;
         let result = self.cursor.next();
-        if let Some(start) = start {
-            self.metrics.total_duration += start.elapsed();
-            self.metrics.timed_operations += 1;
-        }
+        self.metrics.total_duration += start.elapsed();
         result
     }
 
@@ -213,6 +186,59 @@ impl<'metrics, C: TrieCursor> TrieCursor for InstrumentedTrieCursor<'metrics, C>
 }
 
 impl<'metrics, C: TrieStorageCursor> TrieStorageCursor for InstrumentedTrieCursor<'metrics, C> {
+    fn set_hashed_address(&mut self, hashed_address: B256) {
+        self.cursor.set_hashed_address(hashed_address)
+    }
+}
+
+/// A wrapper around a [`TrieCursor`] that tracks exact operation counts without timing.
+#[derive(Debug)]
+pub struct CountOnlyTrieCursor<'metrics, C> {
+    /// The underlying cursor being wrapped
+    cursor: C,
+    /// Cached metrics counters
+    metrics: &'metrics mut TrieCursorMetricsCache,
+}
+
+impl<'metrics, C> CountOnlyTrieCursor<'metrics, C> {
+    /// Create a new count-only cursor wrapping the given cursor.
+    pub const fn new(cursor: C, metrics: &'metrics mut TrieCursorMetricsCache) -> Self {
+        Self { cursor, metrics }
+    }
+}
+
+impl<'metrics, C: TrieCursor> TrieCursor for CountOnlyTrieCursor<'metrics, C> {
+    fn seek_exact(
+        &mut self,
+        key: Nibbles,
+    ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        self.metrics.seek_exact_count += 1;
+        self.cursor.seek_exact(key)
+    }
+
+    fn seek(
+        &mut self,
+        key: Nibbles,
+    ) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        self.metrics.seek_count += 1;
+        self.cursor.seek(key)
+    }
+
+    fn next(&mut self) -> Result<Option<(Nibbles, BranchNodeCompact)>, DatabaseError> {
+        self.metrics.next_count += 1;
+        self.cursor.next()
+    }
+
+    fn current(&mut self) -> Result<Option<Nibbles>, DatabaseError> {
+        self.cursor.current()
+    }
+
+    fn reset(&mut self) {
+        self.cursor.reset()
+    }
+}
+
+impl<'metrics, C: TrieStorageCursor> TrieStorageCursor for CountOnlyTrieCursor<'metrics, C> {
     fn set_hashed_address(&mut self, hashed_address: B256) {
         self.cursor.set_hashed_address(hashed_address)
     }
@@ -238,7 +264,7 @@ mod tests {
     #[test]
     fn count_only_cursor_tracks_operation_counts_without_timing() {
         let mut metrics = TrieCursorMetricsCache::default();
-        let mut cursor = InstrumentedTrieCursor::count_only(mock_trie_cursor(), &mut metrics);
+        let mut cursor = CountOnlyTrieCursor::new(mock_trie_cursor(), &mut metrics);
 
         assert!(cursor.seek(Nibbles::from_nibbles([0x1])).unwrap().is_some());
         assert!(cursor.seek_exact(Nibbles::from_nibbles([0x2])).unwrap().is_some());
@@ -250,6 +276,5 @@ mod tests {
         assert_eq!(metrics.seek_exact_count, 1);
         assert_eq!(metrics.next_count, 1);
         assert_eq!(metrics.total_duration, Duration::ZERO);
-        assert_eq!(metrics.timed_operations, 0);
     }
 }

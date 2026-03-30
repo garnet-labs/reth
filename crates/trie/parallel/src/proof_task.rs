@@ -46,7 +46,7 @@ use reth_trie::{
     hashed_cursor::{HashedCursorFactory, HashedStorageCursor, InstrumentedHashedCursor},
     proof::{ProofBlindedAccountProvider, ProofBlindedStorageProvider},
     proof_v2,
-    trie_cursor::{InstrumentedTrieCursor, TrieCursorFactory, TrieStorageCursor},
+    trie_cursor::{CountOnlyTrieCursor, TrieCursorFactory, TrieStorageCursor},
     DecodedMultiProofV2, HashedPostState, MultiProofTargetsV2, Nibbles, ProofTrieNodeV2,
     ProofV2Target,
 };
@@ -72,17 +72,17 @@ type TrieNodeProviderResult = Result<Option<RevealedNode>, SparseTrieError>;
 
 /// Type alias for the V2 account proof calculator with instrumented cursors.
 type V2AccountProofCalculator<'a, Provider> = proof_v2::ProofCalculator<
-    InstrumentedTrieCursor<'a, <Provider as TrieCursorFactory>::AccountTrieCursor<'a>>,
+    CountOnlyTrieCursor<'a, <Provider as TrieCursorFactory>::AccountTrieCursor<'a>>,
     InstrumentedHashedCursor<'a, <Provider as HashedCursorFactory>::AccountCursor<'a>>,
     AsyncAccountValueEncoder<
-        InstrumentedTrieCursor<'a, <Provider as TrieCursorFactory>::StorageTrieCursor<'a>>,
+        CountOnlyTrieCursor<'a, <Provider as TrieCursorFactory>::StorageTrieCursor<'a>>,
         InstrumentedHashedCursor<'a, <Provider as HashedCursorFactory>::StorageCursor<'a>>,
     >,
 >;
 
 /// Type alias for the V2 storage proof calculator with instrumented cursors.
 type V2StorageProofCalculator<'a, Provider> = proof_v2::StorageProofCalculator<
-    InstrumentedTrieCursor<'a, <Provider as TrieCursorFactory>::StorageTrieCursor<'a>>,
+    CountOnlyTrieCursor<'a, <Provider as TrieCursorFactory>::StorageTrieCursor<'a>>,
     InstrumentedHashedCursor<'a, <Provider as HashedCursorFactory>::StorageCursor<'a>>,
 >;
 
@@ -707,10 +707,8 @@ where
         let mut cursor_metrics_cache = ProofTaskCursorMetricsCache::default();
         let trie_cursor = proof_tx.provider.storage_trie_cursor(B256::ZERO)?;
         let hashed_cursor = proof_tx.provider.hashed_storage_cursor(B256::ZERO)?;
-        let instrumented_trie_cursor = InstrumentedTrieCursor::count_only(
-            trie_cursor,
-            &mut cursor_metrics_cache.storage_trie_cursor,
-        );
+        let instrumented_trie_cursor =
+            CountOnlyTrieCursor::new(trie_cursor, &mut cursor_metrics_cache.storage_trie_cursor);
         let instrumented_hashed_cursor = InstrumentedHashedCursor::new(
             hashed_cursor,
             &mut cursor_metrics_cache.storage_hashed_cursor,
@@ -993,7 +991,7 @@ where
         let storage_trie_cursor = provider.storage_trie_cursor(B256::ZERO)?;
         let storage_hashed_cursor = provider.hashed_storage_cursor(B256::ZERO)?;
 
-        let instrumented_account_trie_cursor = InstrumentedTrieCursor::count_only(
+        let instrumented_account_trie_cursor = CountOnlyTrieCursor::new(
             account_trie_cursor,
             &mut cursor_metrics_cache.account_trie_cursor,
         );
@@ -1001,7 +999,7 @@ where
             account_hashed_cursor,
             &mut cursor_metrics_cache.account_hashed_cursor,
         );
-        let instrumented_storage_trie_cursor = InstrumentedTrieCursor::count_only(
+        let instrumented_storage_trie_cursor = CountOnlyTrieCursor::new(
             storage_trie_cursor,
             &mut cursor_metrics_cache.storage_trie_cursor,
         );
@@ -1015,7 +1013,7 @@ where
                 _,
                 _,
                 AsyncAccountValueEncoder<
-                    InstrumentedTrieCursor<
+                    CountOnlyTrieCursor<
                         '_,
                         <Factory::Provider as TrieCursorFactory>::StorageTrieCursor<'_>,
                     >,

@@ -22,7 +22,7 @@ pub mod mock;
 pub mod metrics;
 #[cfg(feature = "metrics")]
 pub use metrics::TrieCursorMetrics;
-pub use metrics::{InstrumentedTrieCursor, TrieCursorMetricsCache};
+pub use metrics::{CountOnlyTrieCursor, InstrumentedTrieCursor, TrieCursorMetricsCache};
 
 pub use self::{depth_first::DepthFirstTrieIterator, in_memory::*, subnode::CursorSubNode};
 

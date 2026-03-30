@@ -13,8 +13,8 @@ use reth_trie::{
     proof::StorageProof,
     proof_v2::StorageProofCalculator,
     trie_cursor::{
-        mock::MockTrieCursorFactory, InstrumentedTrieCursor, TrieCursorFactory,
-        TrieCursorMetricsCache,
+        mock::MockTrieCursorFactory, CountOnlyTrieCursor, InstrumentedTrieCursor,
+        TrieCursorFactory, TrieCursorMetricsCache,
     },
 };
 use reth_trie_common::{HashedPostState, HashedStorage};
@@ -247,7 +247,7 @@ fn bench_cursor_modes(c: &mut Criterion) {
             let mut trie_metrics = TrieCursorMetricsCache::default();
             let mut hashed_metrics = HashedCursorMetricsCache::default();
             let mut proof_calculator = StorageProofCalculator::new_storage(
-                InstrumentedTrieCursor::count_only(trie_cursor, &mut trie_metrics),
+                CountOnlyTrieCursor::new(trie_cursor, &mut trie_metrics),
                 InstrumentedHashedCursor::new(hashed_cursor, &mut hashed_metrics),
             );
 
