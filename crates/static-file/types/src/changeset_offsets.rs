@@ -478,6 +478,27 @@ mod tests {
     }
 
     #[test]
+    fn test_total_changes_reads_only_last_record() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.csoff");
+        let len = 1_024u64;
+        let last = ChangesetOffset::new(65_535, 7);
+
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            // Leave the earlier records as sparse holes so only the last record contains data.
+            file.seek(SeekFrom::Start((len - 1) * ChangesetOffsetReader::RECORD_SIZE as u64))
+                .unwrap();
+            file.write_all(&last.offset().to_le_bytes()).unwrap();
+            file.write_all(&last.num_changes().to_le_bytes()).unwrap();
+            file.sync_all().unwrap();
+        }
+
+        let mut reader = ChangesetOffsetReader::new(&path, len).unwrap();
+        assert_eq!(reader.total_changes().unwrap(), last.offset() + last.num_changes());
+    }
+
+    #[test]
     fn test_total_changes_respects_committed_len() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.csoff");

@@ -761,6 +761,69 @@ mod tests {
     }
 
     #[test]
+    fn test_account_changeset_count_across_files() {
+        let (static_dir, _) = create_test_static_files_dir();
+        let blocks_per_file = 2;
+        let start_block = 10u64;
+        let counts = [1u64, 3, 2, 4, 1];
+        let end_block = start_block + counts.len() as u64 - 1;
+
+        {
+            let sf_rw: StaticFileProvider<EthPrimitives> =
+                StaticFileProviderBuilder::read_write(&static_dir)
+                    .with_blocks_per_file(blocks_per_file)
+                    .build()
+                    .unwrap();
+            let mut writer = sf_rw.latest_writer(StaticFileSegment::AccountChangeSets).unwrap();
+
+            for block_number in 0..=end_block {
+                let count = if block_number >= start_block {
+                    counts[(block_number - start_block) as usize]
+                } else {
+                    0
+                };
+                let changeset = (0..count)
+                    .map(|i| {
+                        let mut address = Address::ZERO;
+                        address.0[0] = block_number as u8;
+                        address.0[1] = i as u8;
+
+                        AccountBeforeTx {
+                            address,
+                            info: Some(Account {
+                                nonce: block_number,
+                                balance: U256::from((block_number * 100) + i),
+                                bytecode_hash: None,
+                            }),
+                        }
+                    })
+                    .collect();
+
+                writer.append_account_changeset(changeset, block_number).unwrap();
+            }
+
+            writer.commit().unwrap();
+        }
+
+        let sf_rw: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(blocks_per_file)
+                .build()
+                .unwrap();
+
+        assert_eq!(
+            sf_rw.expected_block_index(StaticFileSegment::AccountChangeSets).unwrap().len(),
+            8
+        );
+        let expected_total = sf_rw
+            .walk_account_changeset_range(0..=end_block)
+            .collect::<ProviderResult<Vec<_>>>()
+            .unwrap()
+            .len();
+        assert_eq!(sf_rw.account_changeset_count().unwrap(), expected_total);
+    }
+
+    #[test]
     fn test_get_account_before_block() {
         let (static_dir, _) = create_test_static_files_dir();
 
@@ -1104,6 +1167,66 @@ mod tests {
                 assert_eq!(offset.num_changes(), 5, "Block {} should have 5 changes", i);
             }
         }
+    }
+
+    #[test]
+    fn test_storage_changeset_count_across_files() {
+        let (static_dir, _) = create_test_static_files_dir();
+        let blocks_per_file = 2;
+        let start_block = 10u64;
+        let counts = [2u64, 1, 4, 3, 2];
+        let end_block = start_block + counts.len() as u64 - 1;
+
+        {
+            let sf_rw: StaticFileProvider<EthPrimitives> =
+                StaticFileProviderBuilder::read_write(&static_dir)
+                    .with_blocks_per_file(blocks_per_file)
+                    .build()
+                    .unwrap();
+            let mut writer = sf_rw.latest_writer(StaticFileSegment::StorageChangeSets).unwrap();
+
+            for block_number in 0..=end_block {
+                let count = if block_number >= start_block {
+                    counts[(block_number - start_block) as usize]
+                } else {
+                    0
+                };
+                let changeset = (0..count)
+                    .map(|i| {
+                        let mut address = Address::ZERO;
+                        address.0[0] = block_number as u8;
+                        address.0[1] = i as u8;
+
+                        StorageBeforeTx {
+                            address,
+                            key: B256::with_last_byte(i as u8),
+                            value: U256::from((block_number * 100) + i),
+                        }
+                    })
+                    .collect();
+
+                writer.append_storage_changeset(changeset, block_number).unwrap();
+            }
+
+            writer.commit().unwrap();
+        }
+
+        let sf_rw: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(blocks_per_file)
+                .build()
+                .unwrap();
+
+        assert_eq!(
+            sf_rw.expected_block_index(StaticFileSegment::StorageChangeSets).unwrap().len(),
+            8
+        );
+        let expected_total = sf_rw
+            .walk_storage_changeset_range(0..=end_block)
+            .collect::<ProviderResult<Vec<_>>>()
+            .unwrap()
+            .len();
+        assert_eq!(sf_rw.storage_changeset_count().unwrap(), expected_total);
     }
 
     #[test]

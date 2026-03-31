@@ -2501,25 +2501,7 @@ impl<N: NodePrimitives> ChangeSetReader for StaticFileProvider<N> {
     }
 
     fn account_changeset_count(&self) -> ProviderResult<usize> {
-        let mut count = 0;
-
-        let static_files = iter_static_files(&self.path).map_err(ProviderError::other)?;
-        if let Some(changeset_segments) = static_files.get(StaticFileSegment::AccountChangeSets) {
-            for (block_range, header) in changeset_segments {
-                let csoff_path = self
-                    .path
-                    .join(StaticFileSegment::AccountChangeSets.filename(block_range))
-                    .with_extension("csoff");
-                if csoff_path.exists() {
-                    let len = header.changeset_offsets_len();
-                    let mut reader = ChangesetOffsetReader::new(&csoff_path, len)
-                        .map_err(ProviderError::other)?;
-                    count += reader.total_changes().map_err(ProviderError::other)? as usize;
-                }
-            }
-        }
-
-        Ok(count)
+        self.changeset_count_for_segment(StaticFileSegment::AccountChangeSets)
     }
 }
 
@@ -2624,29 +2606,38 @@ impl<N: NodePrimitives> StorageChangeSetReader for StaticFileProvider<N> {
     }
 
     fn storage_changeset_count(&self) -> ProviderResult<usize> {
-        let mut count = 0;
-
-        let static_files = iter_static_files(&self.path).map_err(ProviderError::other)?;
-        if let Some(changeset_segments) = static_files.get(StaticFileSegment::StorageChangeSets) {
-            for (block_range, header) in changeset_segments {
-                let csoff_path = self
-                    .path
-                    .join(StaticFileSegment::StorageChangeSets.filename(block_range))
-                    .with_extension("csoff");
-                if csoff_path.exists() {
-                    let len = header.changeset_offsets_len();
-                    let mut reader = ChangesetOffsetReader::new(&csoff_path, len)
-                        .map_err(ProviderError::other)?;
-                    count += reader.total_changes().map_err(ProviderError::other)? as usize;
-                }
-            }
-        }
-
-        Ok(count)
+        self.changeset_count_for_segment(StaticFileSegment::StorageChangeSets)
     }
 }
 
 impl<N: NodePrimitives> StaticFileProvider<N> {
+    fn changeset_count_for_segment(&self, segment: StaticFileSegment) -> ProviderResult<usize> {
+        let Some(block_ranges) = self.expected_block_index(segment) else {
+            return Ok(0);
+        };
+
+        let mut count = 0;
+        for block_range in block_ranges.into_values() {
+            let provider =
+                self.get_segment_provider_for_block(segment, block_range.start(), None)?;
+            let len = provider.user_header().changeset_offsets_len();
+            if len == 0 {
+                continue;
+            }
+
+            let csoff_path = provider.data_path().with_extension("csoff");
+            if !csoff_path.exists() {
+                continue;
+            }
+
+            let mut reader =
+                ChangesetOffsetReader::new(&csoff_path, len).map_err(ProviderError::other)?;
+            count += reader.total_changes().map_err(ProviderError::other)? as usize;
+        }
+
+        Ok(count)
+    }
+
     /// Creates an iterator for walking through account changesets in the specified block range.
     ///
     /// This returns a lazy iterator that fetches changesets block by block to avoid loading
