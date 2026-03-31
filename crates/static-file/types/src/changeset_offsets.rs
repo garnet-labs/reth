@@ -227,6 +227,21 @@ impl ChangesetOffsetReader {
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Returns the total number of changeset entries across all blocks in this sidecar.
+    ///
+    /// This is O(1) — it reads only the last record and computes `offset + num_changes`,
+    /// rather than scanning every record.
+    pub fn total_changes(&mut self) -> io::Result<u64> {
+        if self.len == 0 {
+            return Ok(0);
+        }
+
+        match self.get(self.len - 1)? {
+            Some(last) => Ok(last.offset() + last.num_changes()),
+            None => Err(io::Error::new(io::ErrorKind::UnexpectedEof, "missing last csoff record")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -433,5 +448,52 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn test_total_changes_empty() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.csoff");
+        std::fs::File::create(&path).unwrap();
+
+        let mut reader = ChangesetOffsetReader::new(&path, 0).unwrap();
+        assert_eq!(reader.total_changes().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_total_changes_multiple_records() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.csoff");
+
+        {
+            let mut writer = ChangesetOffsetWriter::new(&path, 0).unwrap();
+            writer.append(&ChangesetOffset::new(0, 5)).unwrap();
+            writer.append(&ChangesetOffset::new(5, 3)).unwrap();
+            writer.append(&ChangesetOffset::new(8, 10)).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let mut reader = ChangesetOffsetReader::new(&path, 3).unwrap();
+        // total = last.offset (8) + last.num_changes (10) = 18
+        assert_eq!(reader.total_changes().unwrap(), 18);
+    }
+
+    #[test]
+    fn test_total_changes_respects_committed_len() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.csoff");
+
+        {
+            let mut writer = ChangesetOffsetWriter::new(&path, 0).unwrap();
+            writer.append(&ChangesetOffset::new(0, 5)).unwrap();
+            writer.append(&ChangesetOffset::new(5, 3)).unwrap();
+            writer.append(&ChangesetOffset::new(8, 10)).unwrap();
+            writer.sync().unwrap();
+        }
+
+        // Only 2 records committed — should ignore the third
+        let mut reader = ChangesetOffsetReader::new(&path, 2).unwrap();
+        // total = record[1].offset (5) + record[1].num_changes (3) = 8
+        assert_eq!(reader.total_changes().unwrap(), 8);
     }
 }
