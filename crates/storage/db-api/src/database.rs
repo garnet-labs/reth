@@ -42,6 +42,9 @@ pub trait Database: Send + Sync + Debug {
     /// Returns the transaction ID of the oldest active reader, if available.
     ///
     /// Used to check whether stale readers from a previous write transaction have completed.
+    /// MDBX-backed implementations derive this from the environment's `mi_latter_reader_txnid`
+    /// field, which tracks the oldest reader still pinning old pages.
+    ///
     /// Returns `None` if no readers are active or the backend does not support this query.
     fn oldest_reader_txnid(&self) -> Option<u64> {
         None

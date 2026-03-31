@@ -414,6 +414,9 @@ impl Info {
 
     /// Transaction ID of the oldest active reader across all processes.
     ///
+    /// MDBX exposes this as `mi_latter_reader_txnid`; despite the field name, it is the value used
+    /// to identify the oldest reader that can still pin old pages.
+    ///
     /// Returns 0 if no readers are active.
     #[inline]
     pub const fn latter_reader_txnid(&self) -> u64 {

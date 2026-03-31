@@ -145,6 +145,10 @@ impl<N: NodePrimitives> StaticFileWriters<N> {
     /// Takes queued changeset prune strategies from the account and storage changeset writers,
     /// returning the target block number. The writers will no longer execute these prunes on
     /// commit.
+    ///
+    /// This is used by the deferred reorg-prune flow in the persistence service. Callers must
+    /// only reapply the returned prune after stale MDBX readers from the pre-unwind era have
+    /// drained; otherwise those readers may still reference the old changeset static files.
     pub(crate) fn take_changeset_prunes(&self) -> Option<BlockNumber> {
         let account = {
             let mut writer = self.account_change_sets.write();
@@ -162,6 +166,9 @@ impl<N: NodePrimitives> StaticFileWriters<N> {
     }
 
     /// Re-queues previously deferred changeset prunes onto the writers.
+    ///
+    /// This only restores the queued prune-on-commit state. Safety still depends on the caller
+    /// having waited for stale MDBX readers to drain before the next commit executes the prune.
     pub(crate) fn requeue_changeset_prunes(&self, last_block: BlockNumber) -> ProviderResult<()> {
         {
             let mut writer = self.account_change_sets.write();
@@ -405,6 +412,9 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
 
     /// Takes the queued changeset prune strategy, returning the target block number if one was
     /// queued. Only meaningful for changeset segment writers.
+    ///
+    /// This is intentionally a narrow escape hatch for the deferred reorg-prune path, which moves
+    /// the changeset truncation to a later commit after stale readers have drained.
     const fn take_changeset_prune(&mut self) -> Option<BlockNumber> {
         match self.prune_on_commit.take() {
             Some(
