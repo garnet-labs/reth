@@ -3,7 +3,7 @@
 
 use super::SpawnBlocking;
 use crate::{EthApiTypes, FromEthApiError, FromEvmError, RpcNodeCore};
-use alloy_consensus::{BlockHeader, Transaction};
+use alloy_consensus::{BlockHeader, Transaction, TxReceipt as _};
 use alloy_eips::eip7840::BlobParams;
 use alloy_primitives::{B256, U256};
 use alloy_rpc_types_eth::BlockNumberOrTag;
@@ -12,7 +12,7 @@ use reth_chain_state::{BlockState, ComputedTrieData, ExecutedBlock};
 use reth_chainspec::{ChainSpecProvider, EthChainSpec};
 use reth_errors::{BlockExecutionError, BlockValidationError, ProviderError, RethError};
 use reth_evm::{
-    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput},
+    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, BlockExecutor as _},
     ConfigureEvm, Evm, EvmEnvFor, NextBlockEnvAttributes,
 };
 use reth_primitives_traits::{transaction::error::InvalidTransactionError, HeaderTy, SealedHeader};
@@ -337,8 +337,8 @@ pub trait LoadPendingBlock:
                     continue
                 }
 
-                let gas_used = match builder.execute_transaction(tx) {
-                    Ok(gas_used) => gas_used,
+                match builder.execute_transaction(tx) {
+                    Ok(()) => {}
                     Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         error,
                         ..
@@ -371,9 +371,10 @@ pub trait LoadPendingBlock:
                     }
                 }
 
-                // add gas used by the transaction to cumulative gas used, before creating the
-                // receipt
-                cumulative_gas_used += gas_used;
+                // update cumulative gas used from receipts
+                if let Some(receipt) = builder.executor().receipts().last() {
+                    cumulative_gas_used = receipt.cumulative_gas_used();
+                }
             }
         }
 

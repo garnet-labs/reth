@@ -14,7 +14,7 @@
 //! **Warning:** This namespace allows building arbitrary blocks. Never expose it
 //! on public-facing RPC endpoints without proper authentication.
 
-use alloy_consensus::{Header, Transaction};
+use alloy_consensus::{Header, Transaction, TxReceipt as _};
 use alloy_eips::eip2718::Decodable2718;
 use alloy_evm::{Evm, RecoveredTx};
 use alloy_primitives::{map::HashSet, Address, U256};
@@ -27,7 +27,10 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_errors::RethError;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_ethereum_primitives::EthPrimitives;
-use reth_evm::{execute::BlockBuilder, ConfigureEvm, NextBlockEnvAttributes};
+use reth_evm::{
+    execute::{BlockBuilder, BlockExecutor as _},
+    ConfigureEvm, NextBlockEnvAttributes,
+};
 use reth_primitives_traits::{
     transaction::{recover::try_recover_signers, signed::RecoveryError},
     AlloyBlockHeader as BlockTrait, TxTy,
@@ -177,8 +180,10 @@ where
                     }
 
                     let tip = tx.effective_tip_per_gas(base_fee).unwrap_or_default();
-                    let gas_used = match builder.execute_transaction(tx) {
-                        Ok(gas_used) => gas_used,
+                    let prev_cumulative_gas =
+                        builder.executor().receipts().last().map_or(0, |r| r.cumulative_gas_used());
+                    match builder.execute_transaction(tx) {
+                        Ok(()) => {}
                         Err(err) => {
                             if skip_invalid_transactions {
                                 debug!(
@@ -201,6 +206,13 @@ where
                             return Err(Eth::Error::from_eth_err(err));
                         }
                     };
+
+                    let gas_used = builder
+                        .executor()
+                        .receipts()
+                        .last()
+                        .map_or(0, |r| r.cumulative_gas_used()) -
+                        prev_cumulative_gas;
 
                     block_transactions_rlp_length += tx_rlp_len;
                     total_fees += U256::from(tip) * U256::from(gas_used);

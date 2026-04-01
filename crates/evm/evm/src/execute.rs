@@ -332,7 +332,7 @@ pub trait BlockBuilder {
         f: impl FnOnce(
             &ExecutionResult<<<Self::Executor as BlockExecutor>::Evm as Evm>::HaltReason>,
         ) -> CommitChanges,
-    ) -> Result<Option<u64>, BlockExecutionError>;
+    ) -> Result<(), BlockExecutionError>;
 
     /// Invokes [`BlockExecutor::execute_transaction_with_result_closure`] and saves the
     /// transaction in internal state.
@@ -340,12 +340,11 @@ pub trait BlockBuilder {
         &mut self,
         tx: impl ExecutorTx<Self::Executor>,
         f: impl FnOnce(&ExecutionResult<<<Self::Executor as BlockExecutor>::Evm as Evm>::HaltReason>),
-    ) -> Result<u64, BlockExecutionError> {
+    ) -> Result<(), BlockExecutionError> {
         self.execute_transaction_with_commit_condition(tx, |res| {
             f(res);
             CommitChanges::Yes
         })
-        .map(Option::unwrap_or_default)
     }
 
     /// Invokes [`BlockExecutor::execute_transaction`] and saves the transaction in
@@ -353,7 +352,7 @@ pub trait BlockBuilder {
     fn execute_transaction(
         &mut self,
         tx: impl ExecutorTx<Self::Executor>,
-    ) -> Result<u64, BlockExecutionError> {
+    ) -> Result<(), BlockExecutionError> {
         self.execute_transaction_with_result_closure(tx, |_| ())
     }
 
@@ -467,16 +466,15 @@ where
         f: impl FnOnce(
             &ExecutionResult<<<Self::Executor as BlockExecutor>::Evm as Evm>::HaltReason>,
         ) -> CommitChanges,
-    ) -> Result<Option<u64>, BlockExecutionError> {
+    ) -> Result<(), BlockExecutionError> {
         let (tx_env, tx) = tx.into_parts();
-        if let Some(gas_used) =
-            self.executor.execute_transaction_with_commit_condition((tx_env, &tx), f)?
-        {
+        let receipts_before = self.executor.receipts().len();
+        self.executor.execute_transaction_with_commit_condition((tx_env, &tx), f)?;
+        // If a new receipt was added, the transaction was committed.
+        if self.executor.receipts().len() > receipts_before {
             self.transactions.push(tx);
-            Ok(Some(gas_used.into()))
-        } else {
-            Ok(None)
         }
+        Ok(())
     }
 
     fn finish(

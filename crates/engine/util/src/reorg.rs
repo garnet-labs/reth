@@ -1,6 +1,6 @@
 //! Stream wrapper that simulates reorgs.
 
-use alloy_consensus::{BlockHeader, Transaction};
+use alloy_consensus::{BlockHeader, Transaction, TxReceipt as _};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadStatus};
 use futures::{stream::FuturesUnordered, Stream, StreamExt, TryFutureExt};
 use itertools::Either;
@@ -11,7 +11,7 @@ use reth_engine_primitives::{
 use reth_engine_tree::tree::EngineValidator;
 use reth_errors::{BlockExecutionError, BlockValidationError, RethError, RethResult};
 use reth_evm::{
-    execute::{BlockBuilder, BlockBuilderOutcome},
+    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutor as _},
     ConfigureEvm,
 };
 use reth_payload_primitives::{BuiltPayload, PayloadTypes};
@@ -286,8 +286,8 @@ where
 
         let tx_recovered =
             tx.try_into_recovered().map_err(|_| ProviderError::SenderRecoveryError)?;
-        let gas_used = match builder.execute_transaction(tx_recovered) {
-            Ok(gas_used) => gas_used,
+        match builder.execute_transaction(tx_recovered) {
+            Ok(()) => {}
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                 hash,
                 error,
@@ -299,7 +299,9 @@ where
             Err(error) => return Err(RethError::Execution(error)),
         };
 
-        cumulative_gas_used += gas_used;
+        if let Some(receipt) = builder.executor().receipts().last() {
+            cumulative_gas_used = receipt.cumulative_gas_used();
+        }
     }
 
     let BlockBuilderOutcome { block, .. } = builder.finish(&state_provider, None)?;

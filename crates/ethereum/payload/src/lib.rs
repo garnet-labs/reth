@@ -9,7 +9,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(clippy::useless_let_if_seq)]
 
-use alloy_consensus::Transaction;
+use alloy_consensus::{Transaction, TxReceipt as _};
 use alloy_primitives::U256;
 use alloy_rlp::Encodable;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
@@ -336,8 +336,9 @@ where
         let miner_fee = tx.effective_tip_per_gas(base_fee);
         let tx_hash = *tx.tx_hash();
 
-        let gas_used = match builder.execute_transaction(tx) {
-            Ok(gas_used) => gas_used,
+        let prev_gas_used = cumulative_gas_used;
+        match builder.execute_transaction(tx) {
+            Ok(()) => {}
             Err(BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                 error, ..
             })) => {
@@ -361,6 +362,15 @@ where
             Err(err) => return Err(PayloadBuilderError::evm(err)),
         };
 
+        // get gas used from the receipt's cumulative gas
+        cumulative_gas_used = builder
+            .executor()
+            .receipts()
+            .last()
+            .map(|r| r.cumulative_gas_used())
+            .unwrap_or(prev_gas_used);
+        let gas_used = cumulative_gas_used - prev_gas_used;
+
         // add to the total blob gas used if the transaction successfully executed
         if let Some(blob_count) = tx_blob_count {
             block_blob_count += blob_count;
@@ -376,7 +386,6 @@ where
         // update and add to total fees
         let miner_fee = miner_fee.expect("fee is always valid; execution succeeded");
         total_fees += U256::from(miner_fee) * U256::from(gas_used);
-        cumulative_gas_used += gas_used;
 
         // Add blob tx sidecar to the payload.
         if let Some(sidecar) = blob_tx_sidecar {

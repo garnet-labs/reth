@@ -136,8 +136,8 @@ pub use alloy_evm::{
 /// // Execute transactions
 /// for tx in pending_transactions {
 ///     match builder.execute_transaction(tx) {
-///         Ok(gas_used) => {
-///             println!("Transaction executed, gas used: {}", gas_used);
+///         Ok(()) => {
+///             println!("Transaction executed");
 ///         }
 ///         Err(e) => {
 ///             println!("Transaction failed: {:?}", e);
