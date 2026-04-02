@@ -975,10 +975,7 @@ mod tests {
     };
     use reth_revm::db::BundleState;
     use reth_testing_utils::generators;
-    use reth_trie::{
-        test_utils::{state_root, storage_root},
-        HashedPostState,
-    };
+    use reth_trie::test_utils::{state_root, storage_root};
     use reth_trie_db::ChangesetCache;
     use revm_primitives::{Address, HashMap, B256, KECCAK_EMPTY, U256};
     use revm_state::{AccountInfo, AccountStatus, EvmState, EvmStorageSlot};
@@ -1179,22 +1176,19 @@ mod tests {
         updates
     }
 
-    #[test]
-    fn test_state_root() {
-        reth_tracing::init_test_tracing();
-
+    /// Seeds the database with the given state updates, spawns a payload processor,
+    /// feeds the updates through the state hook, and returns the processor along with
+    /// the computed state root.
+    fn process_state_updates(
+        state_updates: &[EvmState],
+    ) -> (PayloadProcessor<EthEvmConfig>, B256) {
         let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
         let genesis_hash = init_genesis(&factory).unwrap();
-
-        let state_updates = create_mock_state_updates(10, 10);
-        let mut hashed_state = HashedPostState::default();
-        let mut accumulated_state: HashMap<Address, (Account, HashMap<B256, U256>)> =
-            HashMap::default();
 
         {
             let provider_rw = factory.provider_rw().expect("failed to get provider");
 
-            for update in &state_updates {
+            for update in state_updates {
                 let account_updates = update.iter().map(|(address, account)| {
                     (*address, Some(Account::from_revm_account(account)))
                 });
@@ -1212,116 +1206,6 @@ mod tests {
                     .insert_storage_for_hashing(storage_updates)
                     .expect("failed to insert storage");
             }
-            provider_rw.commit().expect("failed to commit changes");
-        }
-
-        for update in &state_updates {
-            hashed_state.extend(evm_state_to_hashed_post_state(update.clone()));
-
-            for (address, account) in update {
-                let storage: HashMap<B256, U256> = account
-                    .storage
-                    .iter()
-                    .map(|(k, v)| (B256::from(*k), v.present_value))
-                    .collect();
-
-                let entry = accumulated_state.entry(*address).or_default();
-                entry.0 = Account::from_revm_account(account);
-                entry.1.extend(storage);
-            }
-        }
-
-        let mut payload_processor = PayloadProcessor::new(
-            reth_tasks::Runtime::test(),
-            EthEvmConfig::new(factory.chain_spec()),
-            &TreeConfig::default(),
-            PrecompileCacheMap::default(),
-        );
-
-        let provider_factory = BlockchainProvider::new(factory).unwrap();
-
-        let mut handle = payload_processor.spawn(
-            ExecutionEnv::test_default(),
-            (
-                Vec::<Result<Recovered<TransactionSigned>, core::convert::Infallible>>::new(),
-                std::convert::identity,
-            ),
-            StateProviderBuilder::new(provider_factory.clone(), genesis_hash, None),
-            OverlayStateProviderFactory::new(provider_factory, ChangesetCache::new()),
-            &TreeConfig::default(),
-            None, // No BAL for test
-        );
-
-        let mut state_hook = handle.state_hook().expect("state hook is None");
-
-        for (i, update) in state_updates.into_iter().enumerate() {
-            state_hook.on_state(StateChangeSource::Transaction(i), &update);
-        }
-        drop(state_hook);
-
-        let root_from_task = handle.state_root().expect("task failed").state_root;
-        let root_from_regular = state_root(accumulated_state);
-
-        assert_eq!(
-            root_from_task, root_from_regular,
-            "State root mismatch: task={root_from_task}, base={root_from_regular}"
-        );
-    }
-
-    #[test]
-    fn state_root_assets_publish_final_storage_roots() {
-        reth_tracing::init_test_tracing();
-
-        let factory = create_test_provider_factory_with_chain_spec(Arc::new(ChainSpec::default()));
-        let genesis_hash = init_genesis(&factory).unwrap();
-
-        let address = Address::from([0x11; 20]);
-        let slot = U256::from(42);
-        let value = U256::from(999);
-        let update = EvmState::from_iter([(
-            address,
-            revm_state::Account {
-                info: AccountInfo {
-                    balance: U256::from(100),
-                    nonce: 1,
-                    code_hash: KECCAK_EMPTY,
-                    code: Some(Default::default()),
-                    account_id: None,
-                },
-                original_info: Box::new(AccountInfo::default()),
-                storage: HashMap::from_iter([(
-                    slot,
-                    EvmStorageSlot::new_changed(U256::ZERO, value, 0),
-                )]),
-                status: AccountStatus::Touched,
-                transaction_id: 0,
-            },
-        )]);
-
-        let hashed_post_state = evm_state_to_hashed_post_state(update.clone());
-        let expected_storage_root =
-            storage_root([(B256::from(slot.to_be_bytes::<32>()), value)]);
-
-        {
-            let provider_rw = factory.provider_rw().expect("failed to get provider");
-
-            let account_updates = update.iter().map(|(address, account)| {
-                (*address, Some(Account::from_revm_account(account)))
-            });
-            provider_rw
-                .insert_account_for_hashing(account_updates)
-                .expect("failed to insert accounts");
-
-            let storage_updates = update.iter().map(|(address, account)| {
-                let storage_entries = account.storage.iter().map(|(slot, value)| {
-                    StorageEntry { key: B256::from(*slot), value: value.present_value }
-                });
-                (*address, storage_entries)
-            });
-            provider_rw
-                .insert_storage_for_hashing(storage_updates)
-                .expect("failed to insert storage");
-
             provider_rw.commit().expect("failed to commit changes");
         }
 
@@ -1346,20 +1230,99 @@ mod tests {
         );
 
         let mut state_hook = handle.state_hook().expect("state hook is None");
-        state_hook.on_state(StateChangeSource::Transaction(0), &update);
+        for (i, update) in state_updates.iter().enumerate() {
+            state_hook.on_state(StateChangeSource::Transaction(i), update);
+        }
         drop(state_hook);
 
-        let outcome = handle.state_root().expect("task failed");
+        let computed_root = handle.state_root().expect("task failed").state_root;
+        (payload_processor, computed_root)
+    }
+
+    #[test]
+    fn test_state_root() {
+        reth_tracing::init_test_tracing();
+
+        let state_updates = create_mock_state_updates(10, 10);
+        let (_, root_from_task) = process_state_updates(&state_updates);
+
+        let mut accumulated_state: HashMap<Address, (Account, HashMap<B256, U256>)> =
+            HashMap::default();
+        for update in &state_updates {
+            for (address, account) in update {
+                let storage: HashMap<B256, U256> = account
+                    .storage
+                    .iter()
+                    .map(|(k, v)| (B256::from(*k), v.present_value))
+                    .collect();
+
+                let entry = accumulated_state.entry(*address).or_default();
+                entry.0 = Account::from_revm_account(account);
+                entry.1.extend(storage);
+            }
+        }
+
+        let root_from_regular = state_root(accumulated_state);
+        assert_eq!(
+            root_from_task, root_from_regular,
+            "State root mismatch: task={root_from_task}, base={root_from_regular}"
+        );
+    }
+
+    #[test]
+    fn state_root_assets_publish_final_storage_roots() {
+        reth_tracing::init_test_tracing();
+
+        let address = Address::from([0x11; 20]);
+        let slot = U256::from(42);
+        let value = U256::from(999);
+        let update = EvmState::from_iter([(
+            address,
+            revm_state::Account {
+                info: AccountInfo {
+                    balance: U256::from(100),
+                    nonce: 1,
+                    code_hash: KECCAK_EMPTY,
+                    code: Some(Default::default()),
+                    account_id: None,
+                },
+                original_info: Box::new(AccountInfo::default()),
+                storage: HashMap::from_iter([(
+                    slot,
+                    EvmStorageSlot::new_changed(U256::ZERO, value, 0),
+                )]),
+                status: AccountStatus::Touched,
+                transaction_id: 0,
+            },
+        )]);
+
+        let (payload_processor, computed_root) = process_state_updates(&[update.clone()]);
+
+        let slot_key = B256::from(slot.to_be_bytes::<32>());
+        let expected_storage_root = storage_root([(slot_key, value)]);
+        let expected_state_root = state_root([(
+            address,
+            (
+                Account::from_revm_account(update.get(&address).unwrap()),
+                [(slot_key, value)],
+            ),
+        )]);
+
+        assert_eq!(
+            computed_root, expected_state_root,
+            "State root mismatch: task={computed_root}, expected={expected_state_root}"
+        );
+
         let preserved = payload_processor
             .state_root_assets
             .take()
             .expect("expected preserved state-root assets");
 
+        let hashed_post_state = evm_state_to_hashed_post_state(update);
         let hashed_address =
             *hashed_post_state.accounts.keys().next().expect("expected one account");
         match preserved {
-            PreservedStateRootAssets::Anchored { storage_root_cache, state_root, .. } => {
-                assert_eq!(state_root, outcome.state_root);
+            PreservedStateRootAssets::Anchored { storage_root_cache, .. } => {
                 assert_eq!(
                     storage_root_cache.get(&hashed_address),
                     Some(expected_storage_root),
