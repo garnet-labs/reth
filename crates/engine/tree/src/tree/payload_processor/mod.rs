@@ -31,9 +31,7 @@ use reth_trie_parallel::{
     proof_task::{ProofTaskCtx, ProofWorkerHandle},
     root::ParallelStateRootError,
 };
-use reth_trie_sparse::{
-    ArenaParallelSparseTrie, ConfigurableSparseTrie, RevealableSparseTrie, SparseStateTrie,
-};
+use reth_trie_sparse::{ConfigurableSparseTrie, SparseStateTrie};
 use std::{
     ops::Not,
     sync::{
@@ -114,6 +112,8 @@ where
     /// Precompile cache map.
     precompile_cache_map: PrecompileCacheMap<SpecFor<Evm>>,
     /// Preserved state-root assets reused across sequential payload validations.
+    ///
+    /// Assets include the sparse trie and cached storage roots.
     state_root_assets: SharedPreservedStateRootAssets,
     /// LFU hot-slot capacity: max storage slots retained across prune cycles.
     sparse_trie_max_hot_slots: usize,
@@ -351,21 +351,14 @@ where
             .record(start.elapsed().as_secs_f64());
 
         let (sparse_state_trie, storage_root_cache) = preserved
-            .map(|assets| assets.into_parts_for(parent_state_root, &self.trie_metrics))
             .unwrap_or_else(|| {
                 debug!(
                     target: "engine::tree::payload_processor",
                     "Creating new state-root assets - no preserved assets available"
                 );
-                let default_trie = RevealableSparseTrie::blind_from(ConfigurableSparseTrie::Arena(
-                    ArenaParallelSparseTrie::default(),
-                ));
-                let trie = SparseStateTrie::default()
-                    .with_accounts_trie(default_trie.clone())
-                    .with_default_storage_trie(default_trie)
-                    .with_updates(true);
-                (trie, StorageRootCache::default())
-            });
+                PreservedStateRootAssets::new()
+            })
+            .into_parts_for(parent_state_root, &self.trie_metrics);
 
         let task_ctx = ProofTaskCtx::new(multiproof_provider_factory);
         #[cfg(feature = "trie-debug")]

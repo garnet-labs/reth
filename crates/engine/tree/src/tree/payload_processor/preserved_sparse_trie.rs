@@ -4,7 +4,9 @@ use super::multiproof::MultiProofTaskMetrics;
 use alloy_primitives::B256;
 use parking_lot::Mutex;
 use reth_primitives_traits::{dashmap::DashMap, FastInstant as Instant};
-use reth_trie_sparse::{ConfigurableSparseTrie, SparseStateTrie};
+use reth_trie_sparse::{
+    ArenaParallelSparseTrie, ConfigurableSparseTrie, RevealableSparseTrie, SparseStateTrie,
+};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -24,6 +26,8 @@ pub(super) struct SharedPreservedStateRootAssets(Arc<Mutex<Option<PreservedState
 
 impl SharedPreservedStateRootAssets {
     /// Takes the preserved assets if present, leaving `None` in its place.
+    ///
+    /// This involves locking and thus may block.
     pub(super) fn take(&self) -> Option<PreservedStateRootAssets> {
         self.0.lock().take()
     }
@@ -98,6 +102,18 @@ pub(super) enum PreservedStateRootAssets {
 }
 
 impl PreservedStateRootAssets {
+    /// Creates new cleared assets with fresh default allocations.
+    pub(super) fn new() -> Self {
+        let default_trie = RevealableSparseTrie::blind_from(ConfigurableSparseTrie::Arena(
+            ArenaParallelSparseTrie::default(),
+        ));
+        let trie = SparseStateTrie::default()
+            .with_accounts_trie(default_trie.clone())
+            .with_default_storage_trie(default_trie)
+            .with_updates(true);
+        Self::Cleared { trie, storage_root_cache: StorageRootCache::default() }
+    }
+
     /// Creates new anchored preserved assets.
     ///
     /// The `state_root` is the computed state root from the trie, which becomes the
@@ -164,17 +180,6 @@ impl PreservedStateRootAssets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reth_trie_sparse::{ArenaParallelSparseTrie, RevealableSparseTrie};
-
-    fn new_sparse_trie() -> SparseTrie {
-        let default_trie = RevealableSparseTrie::blind_from(ConfigurableSparseTrie::Arena(
-            ArenaParallelSparseTrie::default(),
-        ));
-        SparseStateTrie::default()
-            .with_accounts_trie(default_trie.clone())
-            .with_default_storage_trie(default_trie)
-            .with_updates(true)
-    }
 
     #[test]
     fn matching_anchor_reuses_storage_root_cache() {
