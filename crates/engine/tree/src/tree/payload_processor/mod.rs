@@ -961,7 +961,6 @@ mod tests {
     };
     use alloy_eips::eip1898::{BlockNumHash, BlockWithParent};
     use alloy_evm::block::StateChangeSource;
-    use alloy_primitives::keccak256;
     use rand::Rng;
     use reth_chainspec::ChainSpec;
     use reth_db_common::init::init_genesis;
@@ -977,7 +976,7 @@ mod tests {
     use reth_revm::db::BundleState;
     use reth_testing_utils::generators;
     use reth_trie::{
-        test_utils::{state_root, storage_root_prehashed},
+        test_utils::{state_root, storage_root},
         HashedPostState,
     };
     use reth_trie_db::ChangesetCache;
@@ -1279,10 +1278,6 @@ mod tests {
         let address = Address::from([0x11; 20]);
         let slot = U256::from(42);
         let value = U256::from(999);
-        let hashed_address = keccak256(address);
-        let hashed_slot = keccak256(B256::from(slot.to_be_bytes::<32>()));
-        let expected_storage_root = storage_root_prehashed([(hashed_slot, value)]);
-
         let update = EvmState::from_iter([(
             address,
             revm_state::Account {
@@ -1303,20 +1298,30 @@ mod tests {
             },
         )]);
 
+        let hashed_post_state = evm_state_to_hashed_post_state(update.clone());
+        let expected_storage_root =
+            storage_root([(B256::from(slot.to_be_bytes::<32>()), value)]);
+
         {
             let provider_rw = factory.provider_rw().expect("failed to get provider");
+
+            let account_updates = update.iter().map(|(address, account)| {
+                (*address, Some(Account::from_revm_account(account)))
+            });
             provider_rw
-                .insert_account_for_hashing([(
-                    address,
-                    Some(Account::from_revm_account(update.get(&address).unwrap())),
-                )])
-                .expect("failed to insert account");
+                .insert_account_for_hashing(account_updates)
+                .expect("failed to insert accounts");
+
+            let storage_updates = update.iter().map(|(address, account)| {
+                let storage_entries = account.storage.iter().map(|(slot, value)| {
+                    StorageEntry { key: B256::from(*slot), value: value.present_value }
+                });
+                (*address, storage_entries)
+            });
             provider_rw
-                .insert_storage_for_hashing([(
-                    address,
-                    [StorageEntry { key: B256::from(slot), value }],
-                )])
+                .insert_storage_for_hashing(storage_updates)
                 .expect("failed to insert storage");
+
             provider_rw.commit().expect("failed to commit changes");
         }
 
@@ -1350,10 +1355,15 @@ mod tests {
             .take()
             .expect("expected preserved state-root assets");
 
+        let hashed_address =
+            *hashed_post_state.accounts.keys().next().expect("expected one account");
         match preserved {
             PreservedStateRootAssets::Anchored { storage_root_cache, state_root, .. } => {
                 assert_eq!(state_root, outcome.state_root);
-                assert_eq!(storage_root_cache.get(&hashed_address), Some(expected_storage_root));
+                assert_eq!(
+                    storage_root_cache.get(&hashed_address),
+                    Some(expected_storage_root),
+                );
             }
             PreservedStateRootAssets::Cleared { .. } => {
                 panic!("expected anchored state-root assets")
