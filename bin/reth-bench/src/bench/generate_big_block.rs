@@ -265,6 +265,13 @@ pub struct Command {
     /// the flattened BAL on the stored payload.
     #[arg(long, default_value_t = false)]
     bal: bool,
+
+    /// Ignore the per-block blob gas cap when merging blocks.
+    ///
+    /// This is useful for constructing synthetic stress-test payloads for `reth-bb`,
+    /// which intentionally skips blob gas validation for imported big blocks.
+    #[arg(long, default_value_t = false, verbatim_doc_comment)]
+    ignore_blob_gas_limit: bool,
 }
 
 impl Command {
@@ -410,7 +417,8 @@ impl Command {
                             .unwrap_or(u64::MAX)
                     });
 
-                if !blocks.is_empty() &&
+                if !self.ignore_blob_gas_limit &&
+                    !blocks.is_empty() &&
                     accumulated_blob_gas.saturating_add(block_blob_gas) >
                         max_blob_gas_per_merged_block
                 {
