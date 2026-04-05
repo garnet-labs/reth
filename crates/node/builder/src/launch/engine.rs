@@ -104,8 +104,9 @@ impl EngineNodeLauncher {
             .with_adjusted_configs()
             // Create the provider factory with changeset cache
             .with_provider_factory::<_, <CB::Components as NodeComponents<T>>::Evm>(changeset_cache.clone(), rocksdb_provider).await?
-            .inspect(|_| {
+            .inspect(|this| {
                 info!(target: "reth::cli", "Database opened");
+                this.prewarm_db_pages(10_000);
             })
             .with_prometheus_server().await?
             .inspect(|this| {

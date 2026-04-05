@@ -37,7 +37,7 @@ use crate::{
 use alloy_eips::eip2124::Head;
 use alloy_primitives::{BlockNumber, B256};
 use eyre::Context;
-use rayon::ThreadPoolBuilder;
+use rayon::{prelude::*, ThreadPoolBuilder};
 use reth_chainspec::{Chain, EthChainSpec, EthereumHardforks};
 use reth_config::{config::EtlConfig, PruneConfig};
 use reth_consensus::noop::NoopConsensus;
@@ -66,9 +66,9 @@ use reth_node_metrics::{
 };
 use reth_provider::{
     providers::{NodeTypesForProvider, ProviderNodeTypes, RocksDBProvider, StaticFileProvider},
-    BlockHashReader, BlockNumReader, ProviderError, ProviderFactory, ProviderResult,
-    RocksDBProviderFactory, StageCheckpointReader, StaticFileProviderBuilder,
-    StaticFileProviderFactory,
+    AccountExtReader, BlockHashReader, BlockNumReader, ProviderError, ProviderFactory,
+    ProviderResult, RocksDBProviderFactory, StageCheckpointReader, StaticFileProviderBuilder,
+    StaticFileProviderFactory, StorageReader,
 };
 use reth_prune::{PruneModes, PrunerBuilder};
 use reth_rpc_builder::config::RethRpcServerConfig;
@@ -614,6 +614,105 @@ where
     /// Returns the static file provider to interact with the static files.
     pub fn static_file_provider(&self) -> StaticFileProvider<T::Primitives> {
         self.right().static_file_provider()
+    }
+
+    /// Reads recent changesets and their corresponding state entries from the database in
+    /// parallel to populate the OS page cache. This improves performance for the first blocks
+    /// after startup.
+    pub fn prewarm_db_pages(&self, num_blocks: u64) {
+        let tip = match self.provider_factory().best_block_number() {
+            Ok(tip) => tip,
+            Err(err) => {
+                warn!(target: "reth::cli", %err, "Failed to get tip block for DB prewarming");
+                return;
+            }
+        };
+
+        if tip == 0 {
+            return;
+        }
+
+        let start = tip.saturating_sub(num_blocks);
+        let range = start..=tip;
+        info!(target: "reth::cli", ?range, "Prewarming database pages");
+
+        let started = std::time::Instant::now();
+        let factory = self.provider_factory();
+
+        // Collect changesets in parallel: accounts and storage at the same time.
+        let (accounts_result, storages_result) = rayon::join(
+            || {
+                let provider = factory.provider()?;
+                provider.changed_accounts_with_range(range.clone())
+            },
+            || {
+                let provider = factory.provider()?;
+                provider.changed_storages_with_range(range.clone())
+            },
+        );
+
+        // Prewarm account state pages in parallel chunks.
+        match accounts_result {
+            Ok(addresses) => {
+                let num_accounts = addresses.len();
+                info!(target: "reth::cli", num_accounts, elapsed=?started.elapsed(), "Collected changed accounts, loading state pages");
+                let addresses: Vec<_> = addresses.into_iter().collect();
+                let chunk_size = (addresses.len() / rayon::current_num_threads()).max(1);
+                let errors: Vec<_> = addresses
+                    .par_chunks(chunk_size)
+                    .filter_map(|chunk| {
+                        let provider = match factory.provider() {
+                            Ok(p) => p,
+                            Err(err) => return Some(err),
+                        };
+                        provider.basic_accounts(chunk.iter().copied()).err()
+                    })
+                    .collect();
+                if let Some(err) = errors.into_iter().next() {
+                    warn!(target: "reth::cli", %err, "Failed to prewarm account state pages");
+                } else {
+                    info!(target: "reth::cli", num_accounts, elapsed=?started.elapsed(), "Prewarmed account state pages");
+                }
+            }
+            Err(err) => {
+                warn!(target: "reth::cli", %err, "Failed to read account changesets for prewarming");
+            }
+        }
+
+        // Prewarm storage state pages in parallel chunks.
+        match storages_result {
+            Ok(storages) => {
+                let num_slots: usize = storages.values().map(|s| s.len()).sum();
+                info!(target: "reth::cli", num_slots, elapsed=?started.elapsed(), "Collected changed storage slots, loading state pages");
+                let entries: Vec<_> = storages.into_iter().collect();
+                let chunk_size = (entries.len() / rayon::current_num_threads()).max(1);
+                let errors: Vec<_> = entries
+                    .par_chunks(chunk_size)
+                    .filter_map(|chunk| {
+                        let provider = match factory.provider() {
+                            Ok(p) => p,
+                            Err(err) => return Some(err),
+                        };
+                        provider
+                            .plain_state_storages(
+                                chunk.iter().map(|(addr, keys)| (*addr, keys.iter().copied())),
+                            )
+                            .err()
+                    })
+                    .collect();
+                if let Some(err) = errors.into_iter().next() {
+                    warn!(target: "reth::cli", %err, "Failed to prewarm storage state pages");
+                } else {
+                    info!(target: "reth::cli", num_slots, elapsed=?started.elapsed(), "Prewarmed storage state pages");
+                }
+            }
+            Err(err) => {
+                warn!(target: "reth::cli", %err, "Failed to read storage changesets for prewarming");
+            }
+        }
+
+        let elapsed = started.elapsed();
+        info!(target: "reth::cli", ?elapsed, "Database prewarming complete");
     }
 
     /// This launches the prometheus endpoint.
