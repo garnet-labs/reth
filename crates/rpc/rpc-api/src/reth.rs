@@ -1,6 +1,7 @@
 use alloy_eips::BlockId;
 use alloy_primitives::{map::AddressMap, Bytes, B256, U256, U64};
 use jsonrpsee::{core::RpcResult, proc_macros::rpc};
+use reth_trie_common::Nibbles;
 
 // Required for the subscription attributes below
 use reth_chain_state as _;
@@ -19,6 +20,22 @@ pub struct ReceiptWithProofResponse {
     pub block_hash: B256,
     /// The transaction index within the block.
     pub tx_index: u64,
+}
+
+impl ReceiptWithProofResponse {
+    /// Verifies the Merkle proof against the `receipts_root`.
+    ///
+    /// Returns `Ok(())` if the proof is valid, proving that the receipt is included
+    /// in the block's receipts trie at position `tx_index`.
+    pub fn verify(&self) -> Result<(), alloy_trie::proof::ProofVerificationError> {
+        let key = alloy_rlp::encode_fixed_size(&(self.tx_index as usize));
+        alloy_trie::proof::verify_proof(
+            self.receipts_root,
+            Nibbles::unpack(&key),
+            Some(self.receipt.to_vec()),
+            &self.proof,
+        )
+    }
 }
 
 /// Reth API namespace for reth-specific methods

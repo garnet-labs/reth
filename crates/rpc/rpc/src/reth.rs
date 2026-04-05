@@ -1,6 +1,6 @@
 use std::{future::Future, sync::Arc};
 
-use alloy_consensus::{BlockHeader, TxReceipt};
+use alloy_consensus::{BlockHeader, Eip2718EncodableReceipt, TxReceipt};
 use alloy_eips::{eip2718::Encodable2718, BlockId};
 use alloy_primitives::{map::AddressMap, Bytes, B256, U256, U64};
 use alloy_trie::{proof::ProofRetainer, root::adjust_index_for_rlp, HashBuilder};
@@ -114,7 +114,6 @@ where
     ) -> EthResult<Option<ReceiptWithProofResponse>>
     where
         Provider: TransactionsProvider + ReceiptProvider + HeaderProvider,
-        Provider::Receipt: TxReceipt,
     {
         let permit = self
             .inner
@@ -133,7 +132,6 @@ where
     fn try_receipt_with_proof(&self, tx_hash: B256) -> EthResult<Option<ReceiptWithProofResponse>>
     where
         Provider: TransactionsProvider + ReceiptProvider + HeaderProvider,
-        Provider::Receipt: TxReceipt,
     {
         let Some((_, meta)) = self.provider().transaction_by_hash_with_meta(tx_hash)? else {
             return Ok(None);
@@ -160,45 +158,11 @@ where
             )));
         }
 
-        // Encode all receipts as EIP-2718 bytes (with bloom filter).
-        let encoded: Vec<Vec<u8>> = receipts
-            .iter()
-            .map(|r| {
-                let with_bloom = TxReceipt::with_bloom_ref(r);
-                let mut buf = Vec::new();
-                with_bloom.encode_2718(&mut buf);
-                buf
-            })
-            .collect();
-
-        // Build the trie key for the target tx index.
-        let target_key_buf = alloy_rlp::encode_fixed_size(&tx_index);
-        let target_nibbles = Nibbles::unpack(&target_key_buf);
-
-        // Build the receipts MPT with a ProofRetainer for the target tx.
-        let retainer = ProofRetainer::from_iter([target_nibbles.clone()]);
-        let mut hb = HashBuilder::default().with_proof_retainer(retainer);
-
-        for i in 0..len {
-            let exec_index = adjust_index_for_rlp(i, len);
-            let index_buffer = alloy_rlp::encode_fixed_size(&exec_index);
-            hb.add_leaf(Nibbles::unpack(&index_buffer), &encoded[exec_index]);
-        }
-
-        let root = hb.root();
-        if root != receipts_root {
-            return Err(EthApiError::InternalEthError);
-        }
-
-        let proof_nodes = hb.take_proof_nodes();
-        let proof = proof_nodes
-            .matching_nodes_sorted(&target_nibbles)
-            .into_iter()
-            .map(|(_, node)| node)
-            .collect();
+        let (target_receipt_bytes, proof) =
+            build_receipt_proof(&receipts, tx_index).map_err(|_| EthApiError::InternalEthError)?;
 
         Ok(Some(ReceiptWithProofResponse {
-            receipt: Bytes::from(encoded[tx_index].clone()),
+            receipt: target_receipt_bytes,
             proof,
             receipts_root,
             block_hash,
@@ -492,4 +456,197 @@ struct RethApiInner<Provider, EvmConfig> {
     blocking_task_guard: BlockingTaskGuard,
     /// The type that can spawn tasks which would otherwise block.
     task_spawner: Runtime,
+}
+
+/// Builds a Merkle proof for a specific receipt within a list of receipts.
+///
+/// Returns the EIP-2718 encoded target receipt and the Merkle proof nodes. The proof can be
+/// verified against the block's `receipts_root` using `alloy_trie::proof::verify_proof`.
+///
+/// Encodes receipts on-the-fly during trie construction to avoid allocating a separate buffer
+/// for every receipt in the block.
+fn build_receipt_proof<R: TxReceipt + Eip2718EncodableReceipt + Send + Sync>(
+    receipts: &[R],
+    tx_index: usize,
+) -> Result<(Bytes, Vec<Bytes>), ()> {
+    let len = receipts.len();
+    if tx_index >= len {
+        return Err(());
+    }
+
+    let target_key_buf = alloy_rlp::encode_fixed_size(&tx_index);
+    let target_nibbles = Nibbles::unpack(&target_key_buf);
+
+    let retainer = ProofRetainer::from_iter([target_nibbles.clone()]);
+    let mut hb = HashBuilder::default().with_proof_retainer(retainer);
+
+    let mut target_encoded = None;
+    let mut buf = Vec::new();
+
+    for i in 0..len {
+        let exec_index = adjust_index_for_rlp(i, len);
+        buf.clear();
+        receipts[exec_index].with_bloom_ref().encode_2718(&mut buf);
+
+        if exec_index == tx_index {
+            target_encoded = Some(Bytes::copy_from_slice(&buf));
+        }
+
+        let index_buffer = alloy_rlp::encode_fixed_size(&exec_index);
+        hb.add_leaf(Nibbles::unpack(&index_buffer), &buf);
+    }
+
+    let _root = hb.root();
+    let proof_nodes = hb.take_proof_nodes();
+    let proof = proof_nodes
+        .matching_nodes_sorted(&target_nibbles)
+        .into_iter()
+        .map(|(_, node)| node)
+        .collect();
+
+    Ok((target_encoded.expect("target index was within bounds"), proof))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_consensus::{EthereumReceipt, TxType};
+    use alloy_primitives::{Address, Log, LogData};
+    use alloy_trie::proof::verify_proof;
+
+    fn make_receipt(status: bool, gas: u64, logs: Vec<Log>) -> EthereumReceipt {
+        EthereumReceipt { tx_type: TxType::Legacy, success: status, cumulative_gas_used: gas, logs }
+    }
+
+    fn make_log(addr: Address, data: &[u8]) -> Log {
+        Log { address: addr, data: LogData::new_unchecked(Vec::new(), data.to_vec().into()) }
+    }
+
+    fn encode_receipt_2718(receipt: &EthereumReceipt) -> Vec<u8> {
+        let with_bloom = receipt.with_bloom_ref();
+        let mut buf = Vec::new();
+        with_bloom.encode_2718(&mut buf);
+        buf
+    }
+
+    fn compute_receipts_root(receipts: &[EthereumReceipt]) -> B256 {
+        let len = receipts.len();
+        let mut hb = HashBuilder::default();
+        let mut buf = Vec::new();
+        for i in 0..len {
+            let exec_index = adjust_index_for_rlp(i, len);
+            buf.clear();
+            receipts[exec_index].with_bloom_ref().encode_2718(&mut buf);
+            let index_buffer = alloy_rlp::encode_fixed_size(&exec_index);
+            hb.add_leaf(Nibbles::unpack(&index_buffer), &buf);
+        }
+        hb.root()
+    }
+
+    fn build_and_verify(receipts: &[EthereumReceipt], idx: usize) {
+        let root = compute_receipts_root(receipts);
+        let (receipt_bytes, proof) = build_receipt_proof(receipts, idx).unwrap();
+
+        assert_eq!(receipt_bytes.as_ref(), encode_receipt_2718(&receipts[idx]));
+
+        let key = alloy_rlp::encode_fixed_size(&idx);
+        let result =
+            verify_proof(root, Nibbles::unpack(&key), Some(receipt_bytes.to_vec()), &proof);
+        assert!(result.is_ok(), "proof verification failed for index {idx}: {result:?}");
+
+        // Also verify via the ReceiptWithProofResponse::verify utility.
+        let response = ReceiptWithProofResponse {
+            receipt: receipt_bytes,
+            proof,
+            receipts_root: root,
+            block_hash: B256::ZERO,
+            tx_index: idx as u64,
+        };
+        assert!(response.verify().is_ok(), "ReceiptWithProofResponse::verify failed for idx {idx}");
+    }
+
+    #[test]
+    fn receipt_proof_single_tx() {
+        build_and_verify(&[make_receipt(true, 21000, Vec::new())], 0);
+    }
+
+    #[test]
+    fn receipt_proof_multiple_txs() {
+        let receipts: Vec<EthereumReceipt> = (0..10)
+            .map(|i| {
+                make_receipt(
+                    true,
+                    21000 * (i + 1) as u64,
+                    vec![make_log(
+                        Address::with_last_byte(i as u8),
+                        format!("data_{i}").as_bytes(),
+                    )],
+                )
+            })
+            .collect();
+
+        for idx in [0, 1, 5, 9] {
+            build_and_verify(&receipts, idx);
+        }
+    }
+
+    #[test]
+    fn receipt_proof_across_rlp_boundary() {
+        let receipts: Vec<EthereumReceipt> =
+            (0..130).map(|i| make_receipt(true, 21000 * (i + 1) as u64, Vec::new())).collect();
+
+        for idx in [0, 1, 127, 128, 129] {
+            build_and_verify(&receipts, idx);
+        }
+    }
+
+    #[test]
+    fn receipt_proof_with_logs() {
+        let logs = vec![
+            make_log(Address::with_last_byte(0xaa), b"Transfer(from,to,value)"),
+            make_log(Address::with_last_byte(0xbb), b"Approval(owner,spender,value)"),
+        ];
+        let receipts = vec![
+            make_receipt(true, 21000, Vec::new()),
+            make_receipt(true, 50000, logs),
+            make_receipt(false, 100000, Vec::new()),
+        ];
+
+        // Verify the receipt with logs (index 1).
+        build_and_verify(&receipts, 1);
+
+        // Verify the failed receipt (index 2).
+        build_and_verify(&receipts, 2);
+    }
+
+    #[test]
+    fn receipt_proof_out_of_bounds() {
+        let receipts = vec![make_receipt(true, 21000, Vec::new())];
+        assert!(build_receipt_proof(&receipts, 1).is_err());
+        assert!(build_receipt_proof(&receipts, 100).is_err());
+    }
+
+    #[test]
+    fn receipt_proof_empty_block() {
+        let receipts: Vec<EthereumReceipt> = Vec::new();
+        assert!(build_receipt_proof(&receipts, 0).is_err());
+    }
+
+    #[test]
+    fn receipt_proof_tampered_receipt_fails_verification() {
+        let receipts =
+            vec![make_receipt(true, 21000, Vec::new()), make_receipt(true, 42000, Vec::new())];
+        let root = compute_receipts_root(&receipts);
+        let (receipt_bytes, proof) = build_receipt_proof(&receipts, 0).unwrap();
+
+        // Tamper with the receipt bytes.
+        let mut tampered = receipt_bytes.to_vec();
+        if let Some(last) = tampered.last_mut() {
+            *last ^= 0xff;
+        }
+
+        let key = alloy_rlp::encode_fixed_size(&0usize);
+        let result = verify_proof(root, Nibbles::unpack(&key), Some(tampered), &proof);
+        assert!(result.is_err(), "tampered proof should fail verification");
+    }
 }
