@@ -85,8 +85,14 @@ impl<S> CacheEntry<S> {
         self.output.gas_used
     }
 
-    fn to_precompile_result(&self) -> PrecompileResult {
-        Ok(self.output.clone())
+    fn to_precompile_result(&self, reservoir: u64) -> PrecompileResult {
+        Ok(PrecompileOutput {
+            status: self.output.status.clone(),
+            gas_used: self.regular_gas_used(),
+            state_gas_used: self.output.state_gas_used,
+            reservoir,
+            bytes: self.output.bytes.clone(),
+        })
     }
 }
 
@@ -173,7 +179,7 @@ where
             input.gas >= entry.regular_gas_used()
         {
             self.increment_by_one_precompile_cache_hits();
-            return entry.to_precompile_result();
+            return entry.to_precompile_result(input.reservoir);
         }
 
         let calldata = input.data;
