@@ -4,10 +4,11 @@
 
 use alloy_evm::{
     eth::EthEvmContext,
-    precompiles::{
-        DynPrecompile, Precompile, PrecompileInput, PrecompileResultExt, PrecompilesMap,
+    precompiles::{DynPrecompile, Precompile, PrecompileInput, PrecompilesMap},
+    revm::{
+        handler::EthPrecompiles,
+        precompile::{PrecompileId, PrecompileResult},
     },
-    revm::{handler::EthPrecompiles, precompile::PrecompileId},
     Evm, EvmFactory,
 };
 use alloy_genesis::Genesis;
@@ -42,7 +43,7 @@ use schnellru::{ByLength, LruMap};
 use std::sync::Arc;
 
 /// Type alias for the LRU cache used within the [`PrecompileCache`].
-type PrecompileLRUCache = LruMap<(Bytes, u64), PrecompileResultExt>;
+type PrecompileLRUCache = LruMap<(Bytes, u64), PrecompileResult>;
 
 /// A cache for precompile inputs / outputs.
 ///
@@ -122,7 +123,7 @@ impl WrappedPrecompile {
     fn wrap(precompile: DynPrecompile, cache: Arc<RwLock<PrecompileCache>>) -> DynPrecompile {
         let precompile_id = precompile.precompile_id().clone();
         let wrapped = Self::new(precompile, cache);
-        (precompile_id, move |input: PrecompileInput<'_>| -> PrecompileResultExt {
+        (precompile_id, move |input: PrecompileInput<'_>| -> PrecompileResult {
             wrapped.call(input)
         })
             .into()
@@ -134,7 +135,7 @@ impl Precompile for WrappedPrecompile {
         self.precompile.precompile_id()
     }
 
-    fn call(&self, input: PrecompileInput<'_>) -> PrecompileResultExt {
+    fn call(&self, input: PrecompileInput<'_>) -> PrecompileResult {
         let mut cache = self.cache.write();
         let key = (Bytes::copy_from_slice(input.data), input.gas);
 
@@ -164,7 +165,7 @@ pub struct MyExecutorBuilder {
 impl Default for MyExecutorBuilder {
     fn default() -> Self {
         let precompile_cache = PrecompileCache {
-            cache: LruMap::<(Bytes, u64), PrecompileResultExt>::new(ByLength::new(100)),
+            cache: LruMap::<(Bytes, u64), PrecompileResult>::new(ByLength::new(100)),
         };
         Self { precompile_cache: Arc::new(RwLock::new(precompile_cache)) }
     }

@@ -5,9 +5,9 @@ use alloy_primitives::{
     Bytes,
 };
 use moka::policy::EvictionPolicy;
-use reth_evm::precompiles::{DynPrecompile, Precompile, PrecompileInput, PrecompileResultExt};
+use reth_evm::precompiles::{DynPrecompile, Precompile, PrecompileInput};
 use reth_primitives_traits::dashmap::DashMap;
-use revm::precompile::{PrecompileId, PrecompileOutput};
+use revm::precompile::{PrecompileId, PrecompileOutput, PrecompileResult};
 use revm_primitives::Address;
 use std::{hash::Hash, sync::Arc};
 
@@ -85,7 +85,7 @@ impl<S> CacheEntry<S> {
         self.output.gas_used
     }
 
-    fn to_precompile_result(&self) -> PrecompileResultExt {
+    fn to_precompile_result(&self) -> PrecompileResult {
         Ok(self.output.clone())
     }
 }
@@ -129,7 +129,7 @@ where
     ) -> DynPrecompile {
         let precompile_id = precompile.precompile_id().clone();
         let wrapped = Self::new(precompile, cache, spec_id, metrics);
-        (precompile_id, move |input: PrecompileInput<'_>| -> PrecompileResultExt {
+        (precompile_id, move |input: PrecompileInput<'_>| -> PrecompileResult {
             wrapped.call(input)
         })
             .into()
@@ -168,7 +168,7 @@ where
         self.precompile.precompile_id()
     }
 
-    fn call(&self, input: PrecompileInput<'_>) -> PrecompileResultExt {
+    fn call(&self, input: PrecompileInput<'_>) -> PrecompileResult {
         if let Some(entry) = &self.cache.get(input.data, self.spec_id.clone()) &&
             input.gas >= entry.regular_gas_used()
         {
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_precompile_cache_basic() {
-        let dyn_precompile: DynPrecompile = (|_input: PrecompileInput<'_>| -> PrecompileResultExt {
+        let dyn_precompile: DynPrecompile = (|_input: PrecompileInput<'_>| -> PrecompileResult {
             Ok(PrecompileOutput::new(0, Bytes::default(), 0))
         })
         .into();
@@ -269,7 +269,7 @@ mod tests {
 
         // create the first precompile with a specific output
         let precompile1: DynPrecompile = (PrecompileId::custom("custom"), {
-            move |input: PrecompileInput<'_>| -> PrecompileResultExt {
+            move |input: PrecompileInput<'_>| -> PrecompileResult {
                 assert_eq!(input.data, input_data);
 
                 Ok(PrecompileOutput::new(
@@ -283,7 +283,7 @@ mod tests {
 
         // create the second precompile with a different output
         let precompile2: DynPrecompile = (PrecompileId::custom("custom"), {
-            move |input: PrecompileInput<'_>| -> PrecompileResultExt {
+            move |input: PrecompileInput<'_>| -> PrecompileResult {
                 assert_eq!(input.data, input_data);
 
                 Ok(PrecompileOutput::new(
