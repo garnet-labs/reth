@@ -404,7 +404,7 @@ jobs:
             const bal = '${{ steps.args.outputs.bal }}' || 'false';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const noSlackNote = noSlack ? ', no-slack' : '';
-            const balNote = bigBlocks ? `, bal: \`${bal}\`` : '';
+            const balNote = bigBlocks && bal !== 'false' ? `, BAL: \`${bal}\`` : '';
             const cores = '${{ steps.args.outputs.cores }}';
             const coresNote = cores && cores !== '0' ? `, cores: \`${cores}\`` : '';
             const abbaEnabled = '${{ steps.args.outputs.abba }}' !== 'false';
@@ -448,7 +448,7 @@ jobs:
             const bal = '${{ steps.args.outputs.bal }}' || 'false';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const noSlackNote = noSlack ? ', no-slack' : '';
-            const balNote = bigBlocks ? `, bal: \`${bal}\`` : '';
+            const balNote = bigBlocks && bal !== 'false' ? `, BAL: \`${bal}\`` : '';
             const cores = '${{ steps.args.outputs.cores }}';
             const coresNote = cores && cores !== '0' ? `, cores: \`${cores}\`` : '';
             const abbaEnabled = '${{ steps.args.outputs.abba }}' !== 'false';
@@ -594,7 +594,7 @@ jobs:
             const bal = process.env.BENCH_BAL || 'false';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const noSlackNote = noSlack ? ', no-slack' : '';
-            const balNote = bigBlocks ? `, bal: \`${bal}\`` : '';
+            const balNote = bigBlocks && bal !== 'false' ? `, BAL: \`${bal}\`` : '';
             const cores = process.env.BENCH_CORES || '0';
             const coresNote = cores && cores !== '0' ? `, cores: \`${cores}\`` : '';
             const abbaEnabled = (process.env.BENCH_ABBA || 'true') !== 'false';
@@ -1164,6 +1164,9 @@ jobs:
           fi
           if [ -n "${BENCH_WAIT_TIME:-}" ]; then
             SUMMARY_ARGS="$SUMMARY_ARGS --wait-time $BENCH_WAIT_TIME"
+          fi
+          if [ -n "${BENCH_BAL:-}" ] && [ "${BENCH_BAL}" != "false" ]; then
+            SUMMARY_ARGS="$SUMMARY_ARGS --bal-mode $BENCH_BAL"
           fi
           GRAFANA_URL='${{ steps.metrics.outputs.grafana-url }}'
           if [ -n "$GRAFANA_URL" ]; then
