@@ -171,9 +171,26 @@ impl<N: ProviderNodeTypes> Pipeline<N> {
                 }
             }
 
-            let result = self.run_loop().await;
-            trace!(target: "sync::pipeline", ?target, ?result, "Pipeline finished");
-            (self, result)
+            // Loop until we reach max_block or encounter an error/unwind, mirroring
+            // the behavior of `run()`.
+            loop {
+                let result = self.run_loop().await;
+                trace!(target: "sync::pipeline", ?target, ?result, "Pipeline finished");
+                match &result {
+                    Ok(ctrl) if ctrl.should_continue() => {
+                        if self
+                            .progress
+                            .minimum_block_number
+                            .zip(self.max_block)
+                            .is_some_and(|(progress, target)| progress >= target)
+                        {
+                            return (self, result)
+                        }
+                        // Not at max_block yet, run another loop pass.
+                    }
+                    _ => return (self, result),
+                }
+            }
         })
     }
 
