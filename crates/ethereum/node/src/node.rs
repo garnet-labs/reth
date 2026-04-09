@@ -477,7 +477,7 @@ where
                 compilation_metrics.record_compilation(&event);
             })),
         };
-        let backend = JitBackend::start(config)?;
+        let backend = JitBackend::new(config)?;
 
         if jit.enabled {
             info!(target: "reth::cli",

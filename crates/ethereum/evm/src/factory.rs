@@ -45,7 +45,7 @@ impl RethEvmFactory {
     ///
     /// Starts a backend with `enabled: false` so lookups always return `Interpret`.
     pub fn disabled() -> Self {
-        let backend = JitBackend::start(RuntimeConfig::default())
+        let backend = JitBackend::new(RuntimeConfig::default())
             .expect("failed to start disabled revmc runtime");
         Self::new(backend)
     }
