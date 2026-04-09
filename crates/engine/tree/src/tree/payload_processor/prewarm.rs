@@ -132,7 +132,7 @@ where
         self.executor.spawn_blocking_named("prewarm-txs", move || {
             let _enter = debug_span!(
                 target: "engine::tree::payload_processor::prewarm",
-                parent: span,
+                parent: &span,
                 "prewarm_txs"
             )
             .entered();
@@ -360,7 +360,7 @@ where
         self.executor.spawn_blocking_named("prewarm-bal", move || {
             let _enter = debug_span!(
                 target: "engine::tree::payload_processor::prewarm",
-                parent: span,
+                parent: &span,
                 "prewarm_bal"
             )
             .entered();
