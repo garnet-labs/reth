@@ -26,10 +26,11 @@ use reth_db_api::{
 use reth_db_common::DbTool;
 use reth_provider::{
     providers::ProviderNodeTypes, DBProvider, DatabaseProviderFactory, MetadataProvider,
-    MetadataWriter, RocksDBProviderFactory, StaticFileProviderFactory, StaticFileWriter,
-    StorageSettings,
+    MetadataWriter, PruneCheckpointReader, RocksDBProviderFactory, StageCheckpointWriter,
+    StaticFileProviderFactory, StaticFileWriter, StorageSettings,
 };
-use reth_stages_types::StageId;
+use reth_prune_types::PruneSegment;
+use reth_stages_types::{StageCheckpoint, StageId};
 use reth_static_file_types::StaticFileSegment;
 use reth_storage_api::StageCheckpointReader;
 use std::path::PathBuf;
@@ -177,14 +178,12 @@ impl Command {
         let mut sender_cursor = provider.tx_ref().cursor_read::<tables::TransactionSenders>()?;
         let mut block_cursor = provider.tx_ref().cursor_read::<tables::BlockBodyIndices>()?;
 
-        // Find the first available block (may be non-zero on pruned nodes)
-        let first_block = match block_cursor.first()? {
-            Some((block, _)) => block,
-            None => {
-                info!(target: "reth::cli", "No BlockBodyIndices found, skipping TransactionSenders");
-                return Ok(());
-            }
-        };
+        // Find the first unpruned block (SenderRecovery prune checkpoint tells us
+        // the highest pruned block; data starts at checkpoint + 1).
+        let first_block = provider
+            .get_prune_checkpoint(PruneSegment::SenderRecovery)?
+            .and_then(|cp| cp.block_number)
+            .map_or(0, |b| b + 1);
 
         let mut writer =
             sf_provider.get_writer(first_block, StaticFileSegment::TransactionSenders)?;
@@ -231,14 +230,11 @@ impl Command {
 
         let mut cursor = provider.tx_ref().cursor_read::<tables::AccountChangeSets>()?;
 
-        // Find the first available block
-        let first_block = match cursor.first()? {
-            Some((block, _)) => block,
-            None => {
-                info!(target: "reth::cli", "No AccountChangeSets found, skipping");
-                return Ok(());
-            }
-        };
+        // Find the first unpruned block from AccountHistory prune checkpoint
+        let first_block = provider
+            .get_prune_checkpoint(PruneSegment::AccountHistory)?
+            .and_then(|cp| cp.block_number)
+            .map_or(0, |b| b + 1);
 
         let mut writer =
             sf_provider.get_writer(first_block, StaticFileSegment::AccountChangeSets)?;
@@ -280,14 +276,11 @@ impl Command {
 
         let mut cursor = provider.tx_ref().cursor_read::<tables::StorageChangeSets>()?;
 
-        // Find the first available block
-        let first_block = match cursor.first()? {
-            Some((key, _)) => key.block_number(),
-            None => {
-                info!(target: "reth::cli", "No StorageChangeSets found, skipping");
-                return Ok(());
-            }
-        };
+        // Find the first unpruned block from StorageHistory prune checkpoint
+        let first_block = provider
+            .get_prune_checkpoint(PruneSegment::StorageHistory)?
+            .and_then(|cp| cp.block_number)
+            .map_or(0, |b| b + 1);
 
         let mut writer =
             sf_provider.get_writer(first_block, StaticFileSegment::StorageChangeSets)?;
@@ -348,17 +341,13 @@ impl Command {
 
         info!(target: "reth::cli", "Migrating Receipts → static files");
 
-        // Find the first block that has receipts data (may be non-zero on pruned nodes)
+        // Find the first unpruned block from Receipts prune checkpoint
         let provider = tool.provider_factory.provider()?.disable_long_read_transaction_safety();
-        let mut block_cursor = provider.tx_ref().cursor_read::<tables::BlockBodyIndices>()?;
-        let first_block = match block_cursor.first()? {
-            Some((block, _)) => block.max(existing.map_or(0, |b| b + 1)),
-            None => {
-                info!(target: "reth::cli", "No BlockBodyIndices found, skipping Receipts");
-                return Ok(());
-            }
-        };
-        drop(block_cursor);
+        let prune_start = provider
+            .get_prune_checkpoint(PruneSegment::Receipts)?
+            .and_then(|cp| cp.block_number)
+            .map_or(0, |b| b + 1);
+        let first_block = prune_start.max(existing.map_or(0, |b| b + 1));
 
         let block_range = first_block..=tip;
 
@@ -527,6 +516,17 @@ impl Command {
         // Plain state tables superseded by hashed state in v2
         clear_table!(tables::PlainAccountState);
         clear_table!(tables::PlainStorageState);
+
+        // Trie tables must be rebuilt (encoding changed between v1 and v2)
+        clear_table!(tables::AccountsTrie);
+        clear_table!(tables::StoragesTrie);
+
+        // Reset Merkle checkpoint so the trie is rebuilt on next startup
+        let provider_rw = tool.provider_factory.database_provider_rw()?;
+        provider_rw.save_stage_checkpoint(StageId::MerkleExecute, StageCheckpoint::new(0))?;
+        provider_rw.save_stage_checkpoint_progress(StageId::MerkleExecute, vec![])?;
+        provider_rw.commit()?;
+        info!(target: "reth::cli", "MerkleExecute checkpoint reset to 0");
 
         info!(target: "reth::cli", "MDBX tables pruned");
         Ok(())
