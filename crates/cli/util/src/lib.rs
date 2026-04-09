@@ -37,6 +37,4 @@ pub mod sigsegv_handler;
 pub mod sigsegv_handler {
     /// No-op function.
     pub fn install() {}
-    /// No-op function.
-    pub fn ignore_sigpipe() {}
 }
