@@ -114,6 +114,14 @@ extern "C" fn print_stack_trace(_: libc::c_int) {
     }
 }
 
+/// Ignores SIGPIPE so that broken pipes (e.g. `reth | tee`) don't kill the process before the
+/// graceful shutdown path can run.
+pub fn ignore_sigpipe() {
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
 /// Installs a SIGSEGV handler.
 ///
 /// When SIGSEGV is delivered to the process, print a stack trace and then exit.
