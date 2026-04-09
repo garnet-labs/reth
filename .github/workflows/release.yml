@@ -63,17 +63,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Audit release manifest
         run: |
-          echo "=== Release version: ${{ needs.extract-version.outputs.VERSION }} ==="
-          cargo metadata --locked --no-deps --format-version 1 \
-            | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-pkgs = sorted(data['packages'], key=lambda p: p['name'])
-print(f'Releasing {len(pkgs)} workspace packages:')
-for p in pkgs:
-    print(f'  {p["name"]} v{p["version"]}')
-"
-
+          echo "Release version: ${{ needs.extract-version.outputs.VERSION }}"
+          cargo metadata --locked --no-deps --format-version 1 | jq -r '"Releasing " + (.packages | length | tostring) + " workspace packages:" , (.packages[] | "  " + .name + " v" + .version)'
 
   check-version:
     name: check version
