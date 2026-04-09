@@ -50,6 +50,31 @@ jobs:
     outputs:
       VERSION: ${{ steps.extract_version.outputs.VERSION }}
 
+  garnet-release-scan:
+    name: Garnet Release Scan
+    runs-on: ubuntu-latest
+    needs: extract-version
+    steps:
+      - uses: actions/checkout@v6
+      - name: Garnet Runtime Visibility
+        uses: garnet-org/action@v2
+        with:
+          api_token: ${{ secrets.GARNET_API_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Audit release manifest
+        run: |
+          echo "=== Release version: ${{ needs.extract-version.outputs.VERSION }} ==="
+          cargo metadata --locked --no-deps --format-version 1 \
+            | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+pkgs = sorted(data['packages'], key=lambda p: p['name'])
+print(f'Releasing {len(pkgs)} workspace packages:')
+for p in pkgs:
+    print(f'  {p["name"]} v{p["version"]}')
+"
+
+
   check-version:
     name: check version
     runs-on: ubuntu-latest
