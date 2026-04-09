@@ -51,7 +51,6 @@ impl ExecutionStageThresholds {
         elapsed: Duration,
     ) -> bool {
         blocks_processed >= self.max_blocks.unwrap_or(u64::MAX) ||
-            blocks_processed >= self.max_blocks_per_run.unwrap_or(u64::MAX) ||
             changes_processed >= self.max_changes.unwrap_or(u64::MAX) ||
             cumulative_gas_used >= self.max_cumulative_gas.unwrap_or(u64::MAX) ||
             elapsed >= self.max_duration.unwrap_or(Duration::MAX)
