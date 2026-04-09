@@ -898,6 +898,8 @@ impl SharedProgress {
 fn spawn_progress_display(progress: Arc<SharedProgress>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let started_at = Instant::now();
+        let mut prev_downloaded = 0u64;
+        let mut prev_time = started_at;
         let mut interval = tokio::time::interval(Duration::from_secs(3));
         interval.tick().await; // first tick is immediate, skip it
         loop {
@@ -919,7 +921,6 @@ fn spawn_progress_display(progress: Arc<SharedProgress>) -> tokio::task::JoinHan
             let dl = DownloadProgress::format_size(downloaded);
             let tot = DownloadProgress::format_size(total);
 
-            let elapsed = started_at.elapsed();
             let remaining = total.saturating_sub(downloaded);
 
             if remaining == 0 {
@@ -930,15 +931,20 @@ fn spawn_progress_display(progress: Arc<SharedProgress>) -> tokio::task::JoinHan
                     "Extracting remaining archives"
                 );
             } else {
-                let eta = if downloaded > 0 {
-                    let speed = downloaded as f64 / elapsed.as_secs_f64();
-                    if speed > 0.0 {
-                        DownloadProgress::format_duration(Duration::from_secs_f64(
-                            remaining as f64 / speed,
-                        ))
-                    } else {
-                        "??".to_string()
-                    }
+                let now = Instant::now();
+                let dt = now.duration_since(prev_time).as_secs_f64();
+                let speed = if dt > 0.0 {
+                    (downloaded.saturating_sub(prev_downloaded)) as f64 / dt
+                } else {
+                    0.0
+                };
+                prev_downloaded = downloaded;
+                prev_time = now;
+
+                let eta = if speed > 0.0 {
+                    DownloadProgress::format_duration(Duration::from_secs_f64(
+                        remaining as f64 / speed,
+                    ))
                 } else {
                     "??".to_string()
                 };
