@@ -153,8 +153,7 @@ where
             db_reads += 1;
 
             // Get the latest balance (last balance change if any)
-            let balance =
-                account_changes.balance_changes.last().map(|change| change.post_balance);
+            let balance = account_changes.balance_changes.last().map(|change| change.post_balance);
 
             // Get the latest nonce (last nonce change if any)
             let nonce = account_changes.nonce_changes.last().map(|change| change.new_nonce);
@@ -186,9 +185,8 @@ where
                 balance: balance.unwrap_or_else(|| {
                     existing_account.as_ref().map(|acc| acc.balance).unwrap_or(U256::ZERO)
                 }),
-                nonce: nonce.unwrap_or_else(|| {
-                    existing_account.as_ref().map(|acc| acc.nonce).unwrap_or(0)
-                }),
+                nonce: nonce
+                    .unwrap_or_else(|| existing_account.as_ref().map(|acc| acc.nonce).unwrap_or(0)),
                 bytecode_hash: code_hash.unwrap_or_else(|| {
                     existing_account
                         .as_ref()
