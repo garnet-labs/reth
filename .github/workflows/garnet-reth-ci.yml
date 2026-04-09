@@ -1,0 +1,59 @@
+name: Garnet Reth CI
+
+on:
+  workflow_dispatch:
+
+jobs:
+
+  dep-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Garnet Runtime Visibility
+        uses: garnet-org/action@v2
+        with:
+          api_token: ${{ secrets.GARNET_API_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch all crate dependencies
+        run: cargo fetch --locked
+      - name: Print dependency tree (depth 2)
+        run: cargo tree --depth 2 --locked 2>&1 | head -80
+
+  test-run:
+    name: Test Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - name: Garnet Runtime Visibility
+        uses: garnet-org/action@v2
+        with:
+          api_token: ${{ secrets.GARNET_API_TOKEN }}
+      - uses: rui314/setup-mold@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Check workspace
+        run: cargo check --workspace --locked 2>&1 | tail -10
+
+  release-check:
+    name: Release Readiness Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Garnet Runtime Visibility
+        uses: garnet-org/action@v2
+        with:
+          api_token: ${{ secrets.GARNET_API_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+      - name: Inspect release manifest
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '"Workspace packages: " + (.packages | length | tostring),
+                     (.packages[] | "  " + .name + " v" + .version)'
